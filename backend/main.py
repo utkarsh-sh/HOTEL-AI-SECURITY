@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -9,6 +9,17 @@ from pydantic import BaseModel
 from database.event_database import EventDatabase
 from database.camera_database import CameraDatabase
 from database.audit_database import AuditDatabase
+
+from backend.auth_service import (
+    AuthService,
+    AuthenticationError,
+)
+from backend.auth_jwt import create_access_token
+
+from backend.auth_dependencies import (
+    get_current_user,
+    require_roles,
+)
 
 app = FastAPI(
     title="Hotel AI Security API",
@@ -46,11 +57,48 @@ def health_check():
 
 
 # ============================================================
+# AUTHENTICATION
+# ============================================================
+
+@app.post("/login")
+def login(
+    username: str = Form(...),
+    password: str = Form(...),
+):
+    auth_service = AuthService()
+
+    try:
+        try:
+            user = auth_service.authenticate(
+                username=username,
+                password=password,
+            )
+
+        except AuthenticationError as error:
+            raise HTTPException(
+                status_code=401,
+                detail=str(error),
+            )
+
+        access_token = create_access_token(user)
+
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": user,
+        }
+
+    finally:
+        auth_service.close()
+
+# ============================================================
 # CAMERAS
 # ============================================================
 
 @app.get("/cameras")
-def get_cameras():
+def get_cameras(
+    current_user: dict = Depends(get_current_user),
+):
     database = CameraDatabase()
 
     try:
@@ -66,7 +114,10 @@ def get_cameras():
 
 
 @app.get("/cameras/{camera_id}")
-def get_camera(camera_id: str):
+def get_camera(
+    camera_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     database = CameraDatabase()
 
     try:
@@ -85,7 +136,10 @@ def get_camera(camera_id: str):
 
 
 @app.get("/cameras/{camera_id}/health")
-def get_camera_health(camera_id: str):
+def get_camera_health(
+    camera_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     database = CameraDatabase()
 
     try:
@@ -127,6 +181,7 @@ def get_events(
     severity: Optional[str] = None,
     event_type: Optional[str] = None,
     camera_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
 ):
     database = EventDatabase()
 
@@ -162,7 +217,10 @@ def get_events(
 
 
 @app.get("/events/{event_id}")
-def get_event(event_id: int):
+def get_event(
+    event_id: int,
+    current_user: dict = Depends(get_current_user),
+):
     database = EventDatabase()
 
     try:
@@ -185,7 +243,10 @@ def get_event(event_id: int):
 # ============================================================
 
 @app.get("/events/{event_id}/evidence")
-def get_event_evidence(event_id: int):
+def get_event_evidence(
+    event_id: int,
+    current_user: dict = Depends(get_current_user),
+):
     """
     Return the recorded evidence clip for an event.
     """
@@ -234,7 +295,15 @@ def get_event_evidence(event_id: int):
 # ============================================================
 
 @app.post("/events/{event_id}/acknowledge")
-def acknowledge_event(event_id: int):
+def acknowledge_event(
+    event_id: int,
+    current_user: dict = Depends(
+        require_roles(
+            "ADMIN",
+            "SECURITY_OPERATOR",
+        )
+    ),
+):
     database = EventDatabase()
     audit_database = AuditDatabase()
 
@@ -256,7 +325,7 @@ def acknowledge_event(event_id: int):
             action="EVENT_ACKNOWLEDGED",
             entity_type="event",
             entity_id=event_id,
-            actor="operator",
+            actor=current_user["username"],
             details="Security operator acknowledged alert",
         )
 
@@ -277,7 +346,15 @@ def acknowledge_event(event_id: int):
 # ============================================================
 
 @app.post("/events/{event_id}/dispatch")
-def dispatch_event(event_id: int):
+def dispatch_event(
+    event_id: int,
+    current_user: dict = Depends(
+        require_roles(
+            "ADMIN",
+            "SECURITY_OPERATOR",
+        )
+    ),
+):
     database = EventDatabase()
     audit_database = AuditDatabase()
 
@@ -299,7 +376,7 @@ def dispatch_event(event_id: int):
             action="EVENT_DISPATCHED",
             entity_type="event",
             entity_id=event_id,
-            actor="operator",
+            actor=current_user["username"],
             details="Security team dispatched",
         )
 
@@ -323,6 +400,12 @@ def dispatch_event(event_id: int):
 def resolve_event(
     event_id: int,
     request: EventStatusUpdate,
+    current_user: dict = Depends(
+        require_roles(
+            "ADMIN",
+            "SECURITY_OPERATOR",
+        )
+    ),
 ):
     database = EventDatabase()
     audit_database = AuditDatabase()
@@ -346,7 +429,7 @@ def resolve_event(
             action="EVENT_RESOLVED",
             entity_type="event",
             entity_id=event_id,
-            actor="operator",
+            actor=current_user["username"],
             details=request.resolution
             or "Security operator resolved event",
         )
@@ -371,6 +454,12 @@ def resolve_event(
 def mark_false_positive(
     event_id: int,
     request: EventStatusUpdate,
+    current_user: dict = Depends(
+        require_roles(
+            "ADMIN",
+            "SECURITY_OPERATOR",
+        )
+    ),
 ):
     database = EventDatabase()
     audit_database = AuditDatabase()
@@ -394,7 +483,7 @@ def mark_false_positive(
             action="EVENT_FALSE_POSITIVE",
             entity_type="event",
             entity_id=event_id,
-            actor="operator",
+            actor=current_user["username"],
             details=request.resolution
             or "Security operator marked event as false positive",
         )
@@ -413,7 +502,9 @@ def mark_false_positive(
 
 
 @app.get("/audit-logs")
-def get_audit_logs():
+def get_audit_logs(
+    current_user: dict = Depends(get_current_user),
+):
     database = AuditDatabase()
 
     try:
