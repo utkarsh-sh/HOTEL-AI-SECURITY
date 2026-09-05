@@ -1,0 +1,27 @@
+{
+    "zones": [
+        {
+            "zone_id": "restricted_01",
+            "name": "Restricted Area",
+            "type": "restricted",
+            "points": [
+                [
+                    500,
+                    600
+                ],
+                [
+                    1100,
+                    600
+                ],
+                [
+                    1100,
+                    1080
+                ],
+                [
+                    500,
+                    1080
+                ]
+            ]
+        }
+    ]
+}

@@ -1,0 +1,1415 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import "./App.css";
+
+import {
+  getCameras,
+  getEvents,
+  getHealth,
+  acknowledgeEvent,
+  dispatchEvent,
+  resolveEvent,
+  markFalsePositive,
+  getEventAuditLogs,
+} from "./api";
+
+
+const API_BASE_URL = "http://127.0.0.1:8000";
+
+
+function App() {
+  const [cameras, setCameras] = useState([]);
+  const [events, setEvents] = useState([]);
+  const [systemHealth, setSystemHealth] = useState(null);
+
+  const [selectedEvent, setSelectedEvent] = useState(null);
+
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [actionLoading, setActionLoading] = useState(null);
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+
+  const loadEventAuditLogs = useCallback(async (eventId) => {
+  setAuditLoading(true);
+
+  try {
+    const result = await getEventAuditLogs(eventId);
+    setAuditLogs(result.logs);
+  } catch (error) {
+    console.error("Failed to load audit logs:", error);
+    setAuditLogs([]);
+  } finally {
+    setAuditLoading(false);
+  }
+}, []);
+
+  async function loadDashboardData() {
+    try {
+      setError(null);
+
+      const [cameraData, eventData, healthData] =
+        await Promise.all([
+          getCameras(),
+          getEvents(),
+          getHealth(),
+        ]);
+
+      setCameras(cameraData.cameras || []);
+      setEvents(eventData.events || []);
+      setSystemHealth(healthData);
+
+    } catch (err) {
+      console.error("Dashboard API error:", err);
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+
+  useEffect(() => {
+    loadDashboardData();
+
+    const interval = setInterval(
+      loadDashboardData,
+      5000
+    );
+
+    return () => clearInterval(interval);
+  }, []);
+
+
+  const onlineCameras = useMemo(() => {
+    return cameras.filter(
+      (camera) => camera.status === "ONLINE"
+    );
+  }, [cameras]);
+
+
+  const activeEvents = useMemo(() => {
+    return events.filter((event) =>
+      ["NEW", "ACKNOWLEDGED", "DISPATCHED"].includes(
+        event.status
+      )
+    );
+  }, [events]);
+
+
+  const highSeverityEvents = useMemo(() => {
+    return activeEvents.filter(
+      (event) => event.severity === "HIGH"
+    );
+  }, [activeEvents]);
+
+
+  const recentEvents = events.slice(0, 5);
+
+
+  function formatTime(timestamp) {
+    if (!timestamp) {
+      return "--:--";
+    }
+
+    const date = new Date(timestamp);
+
+    return date.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  }
+
+
+  function formatDate(timestamp) {
+    if (!timestamp) {
+      return "Unknown";
+    }
+
+    const date = new Date(timestamp);
+
+    return date.toLocaleString([], {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  }
+
+
+  function getSeverityClass(severity) {
+    if (severity === "HIGH") {
+      return "high";
+    }
+
+    if (severity === "MEDIUM") {
+      return "medium";
+    }
+
+    return "low";
+  }
+
+
+  const openEvent = (event) => {
+  setSelectedEvent(event);
+  loadEventAuditLogs(event.id);
+};
+
+
+  const closeEvent = () => {
+  setSelectedEvent(null);
+  setAuditLogs([]);
+};
+
+  async function performEventAction(action, eventId) {
+  try {
+    setActionLoading(`${action}-${eventId}`);
+    setError(null);
+
+    let response;
+
+    if (action === "acknowledge") {
+      response = await acknowledgeEvent(eventId);
+    }
+
+    if (action === "dispatch") {
+      response = await dispatchEvent(eventId);
+    }
+
+    if (action === "resolve") {
+      const resolution = window.prompt(
+        "Enter resolution details:",
+        "Security team verified and resolved the event."
+      );
+
+      if (resolution === null) {
+        return;
+      }
+
+      response = await resolveEvent(eventId, resolution);
+    }
+
+    if (action === "false-positive") {
+      const resolution = window.prompt(
+        "Why is this a false positive?",
+        "Operator verified that the person was authorized to enter the area."
+      );
+
+      if (resolution === null) {
+        return;
+      }
+
+      response = await markFalsePositive(eventId, resolution);
+    }
+
+    if (!response?.event) {
+      throw new Error("API did not return the updated event.");
+    }
+
+    const updatedEvent = response.event;
+
+    // Update event list immediately.
+    setEvents((currentEvents) =>
+      currentEvents.map((event) =>
+        event.id === updatedEvent.id ? updatedEvent : event
+      )
+    );
+
+    // Update currently opened event immediately.
+    setSelectedEvent(updatedEvent);
+
+    // Refresh audit history after operator action.
+    await loadEventAuditLogs(eventId);
+
+  } catch (err) {
+    console.error("Operator action failed:", err);
+    setError(err.message);
+  } finally {
+    setActionLoading(null);
+  }
+}
+
+
+  return (
+    <div className="app">
+
+      {/* =========================
+          SIDEBAR
+      ========================= */}
+
+      <aside className="sidebar">
+
+        <div className="brand">
+
+          <div className="brand-icon">
+            🛡
+          </div>
+
+          <div>
+            <h1>Hotel AI</h1>
+            <span>SECURITY CENTER</span>
+          </div>
+
+        </div>
+
+
+        <nav className="navigation">
+
+          <button className="nav-item active">
+            <span>▣</span>
+            Dashboard
+          </button>
+
+          <button className="nav-item">
+            <span>◉</span>
+            Cameras
+          </button>
+
+          <button className="nav-item">
+            <span>⚠</span>
+            Security Events
+          </button>
+
+          <button className="nav-item">
+            <span>◷</span>
+            Event History
+          </button>
+
+          <button className="nav-item">
+            <span>⚙</span>
+            Settings
+          </button>
+
+        </nav>
+
+
+        <div className="sidebar-bottom">
+
+          <div className="system-status">
+
+            <span
+              className={
+                systemHealth
+                  ? "status-dot"
+                  : "status-dot offline"
+              }
+            />
+
+            <div>
+
+              <strong>
+                {systemHealth
+                  ? "System Online"
+                  : "System Offline"}
+              </strong>
+
+              <small>
+                {systemHealth
+                  ? "All core services operational"
+                  : "Backend unavailable"}
+              </small>
+
+            </div>
+
+          </div>
+
+        </div>
+
+      </aside>
+
+
+      {/* =========================
+          MAIN CONTENT
+      ========================= */}
+
+      <main className="main-content">
+
+        <header className="topbar">
+
+          <div>
+
+            <p className="eyebrow">
+              SECURITY OPERATIONS
+            </p>
+
+            <h2>
+              Security Dashboard
+            </h2>
+
+          </div>
+
+
+          <div className="operator">
+
+            <div className="operator-avatar">
+              SO
+            </div>
+
+            <div>
+
+              <strong>
+                Security Operator
+              </strong>
+
+              <span>
+                Monitoring Console
+              </span>
+
+            </div>
+
+          </div>
+
+        </header>
+
+
+        {/* =========================
+            API ERROR
+        ========================= */}
+
+        {error && (
+
+          <div className="api-error">
+
+            <strong>
+              Backend connection error
+            </strong>
+
+            <span>
+              {error}
+            </span>
+
+          </div>
+
+        )}
+
+
+        {/* =========================
+            SYSTEM BANNER
+        ========================= */}
+
+        <section className="system-banner">
+
+          <div className="system-banner-left">
+
+            <div className="live-indicator">
+              <span></span>
+              LIVE
+            </div>
+
+            <div>
+
+              <strong>
+                AI CCTV Monitoring Active
+              </strong>
+
+              <p>
+                AI-assisted monitoring is currently
+                processing connected camera feeds.
+              </p>
+
+            </div>
+
+          </div>
+
+
+          <div className="system-time">
+
+            <span>
+              API STATUS
+            </span>
+
+            <strong>
+              {loading
+                ? "Connecting..."
+                : systemHealth
+                  ? "Connected"
+                  : "Offline"}
+            </strong>
+
+          </div>
+
+        </section>
+        
+               
+
+        {/* =========================
+            STATISTICS
+        ========================= */}
+
+        <section className="stats-grid">
+
+          <div className="stat-card">
+
+            <div className="stat-header">
+
+              <span>
+                Connected Cameras
+              </span>
+
+              <span className="stat-icon">
+                ◉
+              </span>
+
+            </div>
+
+            <strong className="stat-number">
+              {onlineCameras.length}
+            </strong>
+
+            <div className="stat-footer success">
+              <span>●</span>
+
+              {onlineCameras.length} camera
+              {onlineCameras.length !== 1
+                ? "s"
+                : ""}{" "}
+              online
+            </div>
+
+          </div>
+
+
+          <div className="stat-card">
+
+            <div className="stat-header">
+
+              <span>
+                Active Alerts
+              </span>
+
+              <span className="stat-icon warning">
+                ⚠
+              </span>
+
+            </div>
+
+            <strong className="stat-number">
+              {activeEvents.length}
+            </strong>
+
+            <div className="stat-footer">
+
+              {activeEvents.length === 0
+                ? "No active alerts"
+                : "Requires operator attention"}
+
+            </div>
+
+          </div>
+
+
+          <div className="stat-card">
+
+            <div className="stat-header">
+
+              <span>
+                High Severity
+              </span>
+
+              <span className="stat-icon danger">
+                !
+              </span>
+
+            </div>
+
+            <strong className="stat-number">
+              {highSeverityEvents.length}
+            </strong>
+
+            <div className="stat-footer danger-text">
+              Requires immediate attention
+            </div>
+
+          </div>
+
+
+          <div className="stat-card">
+
+            <div className="stat-header">
+
+              <span>
+                Total Events
+              </span>
+
+              <span className="stat-icon purple">
+                ◈
+              </span>
+
+            </div>
+
+            <strong className="stat-number">
+              {events.length}
+            </strong>
+
+            <div className="stat-footer">
+              Events stored in database
+            </div>
+
+          </div>
+
+        </section>
+
+
+        {/* =========================
+            MAIN GRID
+        ========================= */}
+
+        <section className="dashboard-grid">
+
+
+          {/* CAMERA PANEL */}
+
+          <div className="panel camera-panel">
+
+            <div className="panel-header">
+
+              <div>
+
+                <p className="panel-label">
+                  MONITORING
+                </p>
+
+                <h3>
+                  Camera Feeds
+                </h3>
+
+              </div>
+
+              <button className="view-button">
+                View All
+              </button>
+
+            </div>
+
+
+            {cameras.length === 0 ? (
+
+              <div className="empty-state">
+                No cameras registered.
+              </div>
+
+            ) : (
+
+              <div className="camera-card">
+
+                <div className="camera-preview">
+
+                  <div className="camera-overlay">
+
+                    <div className="camera-live">
+
+                      <span></span>
+                      LIVE
+
+                    </div>
+
+                    <span className="camera-id">
+                      {cameras[0].camera_id}
+                    </span>
+
+                  </div>
+
+
+                  <div className="camera-placeholder">
+
+                    <div className="camera-placeholder-icon">
+                      ◉
+                    </div>
+
+                    <strong>
+                      Camera Feed
+                    </strong>
+
+                    <span>
+                      Live stream integration coming next
+                    </span>
+
+                  </div>
+
+                </div>
+
+
+                <div className="camera-info">
+
+                  <div>
+
+                    <strong>
+                      {cameras[0].name}
+                    </strong>
+
+                    <span>
+                      {cameras[0].location}
+                    </span>
+
+                  </div>
+
+
+                  <div
+                    className={
+                      cameras[0].status === "ONLINE"
+                        ? "camera-health"
+                        : "camera-health offline"
+                    }
+                  >
+
+                    <span></span>
+
+                    {cameras[0].status}
+
+                  </div>
+
+                </div>
+
+              </div>
+
+            )}
+
+          </div>
+
+
+          {/* EVENTS PANEL */}
+
+          <div className="panel events-panel">
+
+            <div className="panel-header">
+
+              <div>
+
+                <p className="panel-label">
+                  SECURITY ACTIVITY
+                </p>
+
+                <h3>
+                  Recent Events
+                </h3>
+
+              </div>
+
+              <button className="view-button">
+                View All
+              </button>
+
+            </div>
+
+
+            <div className="event-list">
+
+              {recentEvents.length === 0 ? (
+
+                <div className="empty-state">
+                  No security events found.
+                </div>
+
+              ) : (
+
+                recentEvents.map((event) => (
+
+                  <button
+                    className="event-item event-clickable"
+                    key={event.id}
+                    onClick={() => openEvent(event)}
+                  >
+
+                    <div
+                      className={`event-severity ${getSeverityClass(
+                        event.severity
+                      )}`}
+                    >
+
+                      {event.severity === "HIGH"
+                        ? "!"
+                        : "•"}
+
+                    </div>
+
+
+                    <div className="event-content">
+
+                      <div className="event-title-row">
+
+                        <strong>
+                          {event.event_type}
+                        </strong>
+
+                        <span
+                          className={
+                            event.status === "RESOLVED" ||
+                            event.status === "FALSE_POSITIVE"
+                              ? "event-status resolved-status"
+                              : "event-status"
+                          }
+                        >
+                          {event.status}
+                        </span>
+
+                      </div>
+
+
+                      <p>
+                        {event.message}
+                      </p>
+
+
+                      <div className="event-meta">
+
+                        <span>
+                          {event.camera_id}
+                        </span>
+
+                        <span>
+                          •
+                        </span>
+
+                        <span>
+                          {event.zone_name ||
+                            "No zone"}
+                        </span>
+
+                      </div>
+
+                    </div>
+
+
+                    <span className="event-time">
+                      {formatTime(event.timestamp)}
+                    </span>
+
+                  </button>
+
+                ))
+
+              )}
+
+            </div>
+
+          </div>
+
+        </section>
+
+
+        {/* =========================
+            BOTTOM GRID
+        ========================= */}
+
+        <section className="bottom-grid">
+
+
+          <div className="panel health-panel">
+
+            <div className="panel-header">
+
+              <div>
+
+                <p className="panel-label">
+                  INFRASTRUCTURE
+                </p>
+
+                <h3>
+                  System Health
+                </h3>
+
+              </div>
+
+            </div>
+
+
+            <div className="health-list">
+
+              <div className="health-row">
+
+                <div>
+
+                  <strong>
+                    FastAPI Backend
+                  </strong>
+
+                  <span>
+                    REST API service
+                  </span>
+
+                </div>
+
+                <div className="health-value">
+
+                  <span></span>
+
+                  {systemHealth
+                    ? "Operational"
+                    : "Offline"}
+
+                </div>
+
+              </div>
+
+
+              <div className="health-row">
+
+                <div>
+
+                  <strong>
+                    Event Database
+                  </strong>
+
+                  <span>
+                    SQLite storage
+                  </span>
+
+                </div>
+
+                <div className="health-value">
+
+                  <span></span>
+                  Operational
+
+                </div>
+
+              </div>
+
+
+              <div className="health-row">
+
+                <div>
+
+                  <strong>
+                    Evidence Recorder
+                  </strong>
+
+                  <span>
+                    Event video capture
+                  </span>
+
+                </div>
+
+                <div className="health-value">
+
+                  <span></span>
+                  Operational
+
+                </div>
+
+              </div>
+
+            </div>
+
+          </div>
+
+
+          <div className="panel response-panel">
+
+            <div className="panel-header">
+
+              <div>
+
+                <p className="panel-label">
+                  RESPONSE
+                </p>
+
+                <h3>
+                  Operator Actions
+                </h3>
+
+              </div>
+
+            </div>
+
+
+            <div className="operator-message">
+
+              <div className="message-icon">
+                ✓
+              </div>
+
+              <div>
+
+                <strong>
+
+                  {activeEvents.length === 0
+                    ? "No immediate action required"
+                    : `${activeEvents.length} active event${
+                        activeEvents.length !== 1
+                          ? "s"
+                          : ""
+                      } require attention`}
+
+                </strong>
+
+                <p>
+
+                  AI detection results should be
+                  reviewed and verified by authorized
+                  hotel security personnel.
+
+                </p>
+
+              </div>
+
+            </div>
+
+          </div>
+
+        </section>
+
+
+        <footer className="footer">
+
+          <span>
+            Hotel AI Security System
+          </span>
+
+          <span>
+            Prototype v0.3.0
+          </span>
+
+        </footer>
+
+      </main>
+
+
+      {/* =========================
+          EVENT DETAILS MODAL
+      ========================= */}
+
+      {selectedEvent && (
+
+        <div
+          className="modal-backdrop"
+          onClick={closeEvent}
+        >
+
+          <div
+            className="event-modal"
+            onClick={(event) =>
+              event.stopPropagation()
+            }
+          >
+
+            <div className="modal-header">
+
+              <div>
+
+                <p className="panel-label">
+                  SECURITY EVENT
+                </p>
+
+                <h3>
+                  Event #{selectedEvent.id}
+                </h3>
+
+              </div>
+
+
+              <button
+                className="modal-close"
+                onClick={closeEvent}
+                aria-label="Close event details"
+              >
+                ×
+              </button>
+
+            </div>
+
+
+            {/* Evidence */}
+
+            <div className="evidence-section">
+
+              <div className="evidence-header">
+
+                <div>
+
+                  <strong>
+                    Evidence Recording
+                  </strong>
+
+                  <span>
+                    {selectedEvent.evidence_path
+                      ? "Recorded event clip"
+                      : "No evidence available"}
+                  </span>
+
+                </div>
+
+                {selectedEvent.evidence_path && (
+                  <span className="evidence-badge">
+                    VIDEO
+                  </span>
+                )}
+
+              </div>
+
+
+              {selectedEvent.evidence_path ? (
+
+                <video
+                  className="evidence-video"
+                  controls
+                  preload="metadata"
+                  src={`${API_BASE_URL}/events/${selectedEvent.id}/evidence?v=${selectedEvent.id}-${selectedEvent.evidence_path}`}
+                >
+                  Your browser does not support
+                  video playback.
+                </video>
+
+              ) : (
+
+                <div className="no-evidence">
+                  <div className="no-evidence-icon">
+                    ◌
+                  </div>
+
+                  <strong>
+                    Evidence unavailable
+                  </strong>
+
+                  <span>
+                    This event does not have a
+                    recorded evidence clip.
+                  </span>
+
+                </div>
+
+              )}
+
+            </div>
+
+
+            {/* Event information */}
+
+            <div className="event-details-grid">
+
+              <div className="detail-item">
+
+                <span>
+                  Event Type
+                </span>
+
+                <strong>
+                  {selectedEvent.event_type}
+                </strong>
+
+              </div>
+
+
+              <div className="detail-item">
+
+                <span>
+                  Severity
+                </span>
+
+                <strong
+                  className={`severity-text ${getSeverityClass(
+                    selectedEvent.severity
+                  )}`}
+                >
+                  {selectedEvent.severity}
+                </strong>
+
+              </div>
+
+
+              <div className="detail-item">
+
+                <span>
+                  Status
+                </span>
+
+                <strong>
+                  {selectedEvent.status}
+                </strong>
+
+              </div>
+
+
+              <div className="detail-item">
+
+                <span>
+                  Camera
+                </span>
+
+                <strong>
+                  {selectedEvent.camera_id}
+                </strong>
+
+              </div>
+
+
+              <div className="detail-item">
+
+                <span>
+                  Zone
+                </span>
+
+                <strong>
+                  {selectedEvent.zone_name ||
+                    "Not specified"}
+                </strong>
+
+              </div>
+
+
+              <div className="detail-item">
+
+                <span>
+                  Track ID
+                </span>
+
+                <strong>
+                  {selectedEvent.track_id ??
+                    "Not available"}
+                </strong>
+
+              </div>
+
+
+              <div className="detail-item detail-wide">
+
+                <span>
+                  Detection Time
+                </span>
+
+                <strong>
+                  {formatDate(
+                    selectedEvent.timestamp
+                  )}
+                </strong>
+
+              </div>
+
+
+              <div className="detail-item detail-wide">
+
+                <span>
+                  AI Message
+                </span>
+
+                <strong>
+                  {selectedEvent.message}
+                </strong>
+
+              </div>
+
+
+              <div className="detail-item detail-wide">
+
+                <span>
+                  Model Version
+                </span>
+
+                <strong>
+                  {selectedEvent.model_version ||
+                    "Not specified"}
+                </strong>
+
+              </div>
+
+
+              {selectedEvent.resolution && (
+
+                <div className="detail-item detail-wide">
+
+                  <span>
+                    Resolution
+                  </span>
+
+                  <strong>
+                    {selectedEvent.resolution}
+                  </strong>
+
+                </div>
+
+              )}
+
+            </div>
+            
+            {/* Audit History */}
+<div className="audit-history">
+  <div className="audit-history-header">
+    <span className="audit-history-label">
+      AUDIT HISTORY
+    </span>
+    <span className="audit-history-count">
+      {auditLogs.length} {auditLogs.length === 1 ? "entry" : "entries"}
+    </span>
+  </div>
+
+  {auditLoading ? (
+    <div className="audit-history-empty">
+      Loading audit history...
+    </div>
+  ) : auditLogs.length === 0 ? (
+    <div className="audit-history-empty">
+      No audit history available.
+    </div>
+  ) : (
+    <div className="audit-history-list">
+      {auditLogs.map((log) => (
+        <div
+          className="audit-history-item"
+          key={log.id}
+        >
+          <div className="audit-history-action">
+            {log.action
+              .replaceAll("_", " ")
+              .replace("EVENT ", "")}
+          </div>
+
+          <div className="audit-history-details">
+            <span>
+              {log.actor}
+            </span>
+
+            <span>
+              {new Date(log.timestamp).toLocaleString()}
+            </span>
+          </div>
+
+          {log.details && (
+            <div className="audit-history-description">
+              {log.details}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  )}
+</div>
+
+                        {/* Footer */}
+
+            <div className="modal-footer">
+
+              <div className="modal-notice">
+                AI-assisted detection requires
+                human verification.
+              </div>
+
+              <div className="modal-actions">
+
+                {selectedEvent.status === "NEW" && (
+                  <>
+                    <button
+                      className="modal-action false-positive"
+                      disabled={
+                        actionLoading ===
+                        `false-positive-${selectedEvent.id}`
+                      }
+                      onClick={() =>
+                        performEventAction(
+                          "false-positive",
+                          selectedEvent.id
+                        )
+                      }
+                    >
+                      {actionLoading ===
+                      `false-positive-${selectedEvent.id}`
+                        ? "Processing..."
+                        : "False Positive"}
+                    </button>
+
+                    <button
+                      className="modal-action acknowledge"
+                      disabled={
+                        actionLoading ===
+                        `acknowledge-${selectedEvent.id}`
+                      }
+                      onClick={() =>
+                        performEventAction(
+                          "acknowledge",
+                          selectedEvent.id
+                        )
+                      }
+                    >
+                      {actionLoading ===
+                      `acknowledge-${selectedEvent.id}`
+                        ? "Processing..."
+                        : "Acknowledge"}
+                    </button>
+                  </>
+                )}
+
+                {selectedEvent.status === "ACKNOWLEDGED" && (
+                  <>
+                    <button
+                      className="modal-action false-positive"
+                      disabled={
+                        actionLoading ===
+                        `false-positive-${selectedEvent.id}`
+                      }
+                      onClick={() =>
+                        performEventAction(
+                          "false-positive",
+                          selectedEvent.id
+                        )
+                      }
+                    >
+                      {actionLoading ===
+                      `false-positive-${selectedEvent.id}`
+                        ? "Processing..."
+                        : "False Positive"}
+                    </button>
+
+                    <button
+                      className="modal-action dispatch"
+                      disabled={
+                        actionLoading ===
+                        `dispatch-${selectedEvent.id}`
+                      }
+                      onClick={() =>
+                        performEventAction(
+                          "dispatch",
+                          selectedEvent.id
+                        )
+                      }
+                    >
+                      {actionLoading ===
+                      `dispatch-${selectedEvent.id}`
+                        ? "Processing..."
+                        : "Dispatch"}
+                    </button>
+                  </>
+                )}
+
+                {selectedEvent.status === "DISPATCHED" && (
+                  <button
+                    className="modal-action resolve"
+                    disabled={
+                      actionLoading ===
+                      `resolve-${selectedEvent.id}`
+                    }
+                    onClick={() =>
+                      performEventAction(
+                        "resolve",
+                        selectedEvent.id
+                      )
+                    }
+                  >
+                    {actionLoading ===
+                    `resolve-${selectedEvent.id}`
+                      ? "Processing..."
+                      : "Resolve Event"}
+                  </button>
+                )}
+
+                <button
+                  className="close-button"
+                  onClick={closeEvent}
+                >
+                  Close
+                </button>
+
+              </div>
+
+            </div>
+
+          </div>
+
+        </div>
+
+      )}
+
+    </div>
+  );
+}
+
+export default App;
