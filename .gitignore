@@ -13,3 +13,5 @@ logs/*
 *.jpg
 *.jpeg
 *.png
+# SQLite runtime databases
+database/*.db
