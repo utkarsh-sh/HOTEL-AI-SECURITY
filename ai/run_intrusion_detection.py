@@ -6,7 +6,16 @@ import numpy as np
 from ai.person_detector import PersonDetector
 from ai.tracker import PersonTracker
 from ai.zone_detector import ZoneDetector
-from ai.camera_health import CameraHealthMonitor
+from ai.camera_health import (
+    CameraHealthMonitor,
+    CAMERA_OFFLINE,
+    CAMERA_RECOVERED,
+)
+from ai.camera_health_events import (
+    CameraHealthEventService,
+    CAMERA_OFFLINE_EVENT,
+    CAMERA_RECOVERED_EVENT,
+)
 from ai.evidence_recorder import EvidenceRecorder
 
 from database.event_database import EventDatabase
@@ -16,6 +25,10 @@ from rules.intrusion_rules import IntrusionRule
 
 from video.source import FileVideoSource
 
+
+# ============================================================
+# Configuration
+# ============================================================
 
 VIDEO_PATH = "data/input/01_person_tracking_intrusion.mp4"
 ZONE_PATH = "configs/zones.json"
@@ -27,8 +40,22 @@ AI_FPS = 5.0
 PRE_EVENT_SECONDS = 5
 POST_EVENT_SECONDS = 5
 
+CAMERA_ID = "CAM-001"
+
+CAMERA_FAILURE_THRESHOLD = 3
+
+CAMERA_HEALTH_MODEL_VERSION = "camera-health-v1"
+INTRUSION_MODEL_VERSION = "prototype-v1"
+
+
+# ============================================================
+# Utility functions
+# ============================================================
 
 def load_zones(path):
+    """
+    Load configured security zones from JSON.
+    """
 
     with open(
         path,
@@ -41,15 +68,29 @@ def load_zones(path):
     return config["zones"]
 
 
+# ============================================================
+# Main
+# ============================================================
+
 def main():
 
     print("=" * 60)
     print("HOTEL AI CCTV - INTRUSION DETECTION")
     print("=" * 60)
 
-    # --------------------------------------------------
+    source = None
+    writer = None
+    camera_database = None
+    event_database = None
+    evidence_recorder = None
+
+    total_events = 0
+    frame_index = 0
+    ai_frames = 0
+
+    # --------------------------------------------------------
     # Load video
-    # --------------------------------------------------
+    # --------------------------------------------------------
 
     source = FileVideoSource(
         VIDEO_PATH
@@ -112,9 +153,9 @@ def main():
         f"{AI_FPS}"
     )
 
-    # --------------------------------------------------
+    # --------------------------------------------------------
     # Load AI components
-    # --------------------------------------------------
+    # --------------------------------------------------------
 
     detector = PersonDetector()
 
@@ -132,9 +173,9 @@ def main():
         persistence_frames=3
     )
 
-    # --------------------------------------------------
+    # --------------------------------------------------------
     # Initialize databases
-    # --------------------------------------------------
+    # --------------------------------------------------------
 
     event_database = EventDatabase(
         "database/hotel_security.db"
@@ -144,7 +185,11 @@ def main():
         "database/hotel_security.db"
     )
 
-    camera_id = "CAM-001"
+    camera_health_events = CameraHealthEventService(
+        event_database=event_database
+    )
+
+    camera_id = CAMERA_ID
 
     print(
         "Event database initialized."
@@ -154,9 +199,9 @@ def main():
         "Camera database initialized."
     )
 
-    # --------------------------------------------------
+    # --------------------------------------------------------
     # Verify camera registration
-    # --------------------------------------------------
+    # --------------------------------------------------------
 
     camera = camera_database.get_camera(
         camera_id
@@ -174,30 +219,39 @@ def main():
         f"({camera['location']})"
     )
 
-    # --------------------------------------------------
+    # --------------------------------------------------------
     # Camera health monitor
-    # --------------------------------------------------
+    # --------------------------------------------------------
 
     camera_health = CameraHealthMonitor(
         camera_id=camera_id,
         database=camera_database,
-        failure_threshold=3,
-    )
-
-    camera_health.frame_received(
-        fps=source_fps,
-        width=width,
-        height=height,
+        failure_threshold=CAMERA_FAILURE_THRESHOLD,
     )
 
     print(
-        f"Camera health: "
-        f"{camera_id} ONLINE"
+        f"Camera health monitor initialized: "
+        f"{camera_id}"
     )
 
-    # --------------------------------------------------
+    print(
+        f"Failure threshold: "
+        f"{CAMERA_FAILURE_THRESHOLD}"
+    )
+
+    print(
+        f"Persisted status: "
+        f"{camera['status']}"
+    )
+
+    print(
+        f"Persisted failures: "
+        f"{camera['consecutive_failures']}"
+    )
+
+    # --------------------------------------------------------
     # Evidence recorder
-    # --------------------------------------------------
+    # --------------------------------------------------------
 
     evidence_recorder = EvidenceRecorder(
         output_directory=EVIDENCE_DIRECTORY,
@@ -225,9 +279,9 @@ def main():
         f"{POST_EVENT_SECONDS}s"
     )
 
-    # --------------------------------------------------
+    # --------------------------------------------------------
     # Display loaded components
-    # --------------------------------------------------
+    # --------------------------------------------------------
 
     print("-" * 60)
 
@@ -260,14 +314,18 @@ def main():
     )
 
     print(
+        "Camera health event service loaded."
+    )
+
+    print(
         "Evidence recorder loaded."
     )
 
     print("-" * 60)
 
-    # --------------------------------------------------
+    # --------------------------------------------------------
     # Output video
-    # --------------------------------------------------
+    # --------------------------------------------------------
 
     fourcc = cv2.VideoWriter_fourcc(
         *"mp4v"
@@ -287,9 +345,9 @@ def main():
             f"{OUTPUT_PATH}"
         )
 
-    # --------------------------------------------------
+    # --------------------------------------------------------
     # Frame sampling
-    # --------------------------------------------------
+    # --------------------------------------------------------
 
     sample_interval = max(
         1,
@@ -298,380 +356,532 @@ def main():
         ),
     )
 
-    frame_index = 0
-    ai_frames = 0
-    total_events = 0
+    print(
+        f"AI sample interval: "
+        f"every {sample_interval} frames"
+    )
 
     print(
-        "Processing..."
+        f"Effective AI FPS: "
+        f"{source_fps / sample_interval:.2f}"
     )
 
     print("-" * 60)
 
-    # --------------------------------------------------
+    # --------------------------------------------------------
     # Main processing loop
-    # --------------------------------------------------
+    # --------------------------------------------------------
 
-    while True:
+    try:
 
-        frame = source.read()
+        print(
+            "Processing..."
+        )
 
-        # --------------------------------------------------
-        # Camera health monitoring
-        # --------------------------------------------------
+        print("-" * 60)
 
-        if frame is None:
+        while True:
 
-            camera_health.frame_failed(
-                error=(
-                    "No frame received "
-                    "from video source"
+            frame = source.read()
+
+            # ------------------------------------------------
+            # Camera health monitoring
+            # ------------------------------------------------
+
+            if frame is None:
+
+                transition = camera_health.frame_failed(
+                    error=(
+                        "No frame received "
+                        "from video source"
+                    )
                 )
-            )
 
-            failure_count = (
-                camera_health.get_failure_count()
-            )
-
-            print(
-                f"[CAMERA FAILURE] "
-                f"Camera={camera_id} "
-                f"ConsecutiveFailures="
-                f"{failure_count}"
-            )
-
-            if (
-                failure_count
-                >= camera_health.failure_threshold
-            ):
+                failure_count = (
+                    camera_health.get_failure_count()
+                )
 
                 print(
-                    f"[CAMERA OFFLINE] "
+                    f"[CAMERA FAILURE] "
                     f"Camera={camera_id} "
-                    f"FailureThreshold="
-                    f"{camera_health.failure_threshold}"
+                    f"ConsecutiveFailures="
+                    f"{failure_count}"
                 )
 
-            break
+                # --------------------------------------------
+                # OFFLINE transition
+                # --------------------------------------------
 
-        # --------------------------------------------------
-        # Valid frame received
-        # --------------------------------------------------
+                if transition == CAMERA_OFFLINE:
 
-        camera_health.frame_received(
-            fps=source_fps,
-            width=width,
-            height=height,
-        )
-
-        # --------------------------------------------------
-        # Add every frame to evidence recorder
-        # --------------------------------------------------
-
-        evidence_recorder.add_frame(
-            frame
-        )
-
-        # --------------------------------------------------
-        # Run AI every sample_interval frames
-        # --------------------------------------------------
-
-        if (
-            frame_index
-            % sample_interval
-            == 0
-        ):
-
-            ai_frames += 1
-
-            # ----------------------------------------------
-            # Person detection
-            # ----------------------------------------------
-
-            detections = detector.detect(
-                frame
-            )
-
-            # ----------------------------------------------
-            # Person tracking
-            # ----------------------------------------------
-
-            tracks = tracker.update(
-                detections
-            )
-
-            # ----------------------------------------------
-            # Zone detection
-            # ----------------------------------------------
-
-            zone_results = (
-                zone_detector.check_tracks(
-                    tracks
-                )
-            )
-
-            # ----------------------------------------------
-            # Intrusion rule
-            # ----------------------------------------------
-
-            events = intrusion_rule.evaluate(
-                zone_results
-            )
-
-            # ----------------------------------------------
-            # Draw zones
-            # ----------------------------------------------
-
-            for zone in zones:
-
-                polygon = np.array(
-                    zone["points"],
-                    dtype=np.int32,
-                )
-
-                cv2.polylines(
-                    frame,
-                    [polygon],
-                    True,
-                    (0, 255, 255),
-                    3,
-                )
-
-                x, y = polygon[0]
-
-                cv2.putText(
-                    frame,
-                    zone["name"],
-                    (x, y - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (0, 255, 255),
-                    2,
-                )
-
-            # ----------------------------------------------
-            # Draw tracked people
-            # ----------------------------------------------
-
-            for track in tracks:
-
-                x1, y1, x2, y2 = (
-                    track["box"]
-                )
-
-                track_id = track[
-                    "track_id"
-                ]
-
-                state = track[
-                    "state"
-                ]
-
-                cv2.rectangle(
-                    frame,
-                    (x1, y1),
-                    (x2, y2),
-                    (0, 255, 0),
-                    2,
-                )
-
-                label = (
-                    f"Person {track_id} "
-                    f"| {state}"
-                )
-
-                cv2.putText(
-                    frame,
-                    label,
-                    (
-                        x1,
-                        max(
-                            30,
-                            y1 - 10
-                        ),
-                    ),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (0, 255, 0),
-                    2,
-                )
-
-            # ----------------------------------------------
-            # Process intrusion events
-            # ----------------------------------------------
-
-            for event in events:
-
-                total_events += 1
-
-                # ------------------------------------------
-                # Create event in database
-                # ------------------------------------------
-
-                event_id = (
-                    event_database.create_event(
-                        event_type=event[
-                            "event_type"
-                        ],
-                        severity=event[
-                            "severity"
-                        ],
-                        camera_id=camera_id,
-                        zone_id=event[
-                            "zone_id"
-                        ],
-                        zone_name=event[
-                            "zone_name"
-                        ],
-                        track_id=event[
-                            "track_id"
-                        ],
-                        message=event[
-                            "message"
-                        ],
-                        model_version=(
-                            "prototype-v1"
-                        ),
-                    )
-                )
-
-                # ------------------------------------------
-                # Start evidence capture
-                # ------------------------------------------
-
-                evidence_path = (
-                    evidence_recorder
-                    .start_event_capture(
-                        event_type=event[
-                            "event_type"
-                        ],
-                        event_id=event_id,
-                    )
-                )
-
-                # ------------------------------------------
-                # Save evidence path
-                # ------------------------------------------
-
-                if evidence_path is not None:
-
-                    event_database.update_evidence_path(
-                        event_id=event_id,
-                        evidence_path=str(
-                            evidence_path
-                        ),
+                    offline_event_id = (
+                        camera_health_events
+                        .create_offline_event(
+                            camera_id=camera_id,
+                            error=(
+                                "No frame received "
+                                "from video source"
+                            ),
+                        )
                     )
 
-                # ------------------------------------------
-                # Log event
-                # ------------------------------------------
-
-                print(
-                    f"[INTRUSION EVENT] "
-                    f"Frame={frame_index} "
-                    f"EventID={event_id} "
-                    f"Track={event['track_id']} "
-                    f"Zone={event['zone_name']} "
-                    f"Severity={event['severity']} "
-                    f"Status=NEW"
-                )
-
-                if evidence_path is not None:
+                    total_events += 1
 
                     print(
-                        f"[EVIDENCE STARTED] "
-                        f"EventID={event_id} "
-                        f"Path={evidence_path}"
+                        f"[CAMERA OFFLINE] "
+                        f"Camera={camera_id} "
+                        f"FailureThreshold="
+                        f"{camera_health.failure_threshold} "
+                        f"EventID={offline_event_id}"
+                    )
+
+                elif camera_health.is_offline():
+
+                    print(
+                        f"[CAMERA OFFLINE] "
+                        f"Camera={camera_id} "
+                        "Offline state already persisted. "
+                        "No duplicate event created."
                     )
 
                 else:
 
                     print(
-                        f"[EVIDENCE WARNING] "
-                        f"EventID={event_id} "
-                        f"Evidence capture "
-                        f"could not be started."
+                        f"[CAMERA FAILURE] "
+                        f"Camera={camera_id} "
+                        f"Waiting for failure threshold..."
                     )
 
-                # ------------------------------------------
-                # Display intrusion alert
-                # ------------------------------------------
+                # ------------------------------------------------
+                # End-of-stream / failed-source condition
+                # ------------------------------------------------
 
-                cv2.putText(
-                    frame,
-                    "!!! INTRUSION DETECTED !!!",
-                    (50, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1.0,
-                    (0, 0, 255),
-                    3,
+                break
+
+            # ------------------------------------------------
+            # Valid frame received
+            # ------------------------------------------------
+
+            previous_failure_count = (
+                camera_health.get_failure_count()
+            )
+
+            transition = camera_health.frame_received(
+                fps=source_fps,
+                width=width,
+                height=height,
+            )
+
+            # ------------------------------------------------
+            # CAMERA RECOVERED transition
+            # ------------------------------------------------
+
+            if transition == CAMERA_RECOVERED:
+
+                recovered_event_id = (
+                    camera_health_events
+                    .create_recovered_event(
+                        camera_id=camera_id
+                    )
                 )
 
-                cv2.putText(
-                    frame,
-                    event["message"],
-                    (50, 100),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (0, 0, 255),
-                    2,
+                total_events += 1
+
+                print(
+                    f"[CAMERA RECOVERED] "
+                    f"Camera={camera_id} "
+                    f"PreviousFailures="
+                    f"{previous_failure_count} "
+                    f"EventID={recovered_event_id}"
                 )
 
-        # --------------------------------------------------
-        # Write processed frame
-        # --------------------------------------------------
+            # ------------------------------------------------
+            # Add every frame to evidence recorder
+            # ------------------------------------------------
 
-        writer.write(
-            frame
-        )
+            evidence_recorder.add_frame(
+                frame
+            )
 
-        frame_index += 1
+            # ------------------------------------------------
+            # Run AI every sample_interval frames
+            # ------------------------------------------------
 
-        # --------------------------------------------------
-        # Progress
-        # --------------------------------------------------
+            if (
+                frame_index
+                % sample_interval
+                == 0
+            ):
 
-        if (
-            frame_index
-            % max(
+                ai_frames += 1
+
+                # --------------------------------------------
+                # Person detection
+                # --------------------------------------------
+
+                detections = detector.detect(
+                    frame
+                )
+
+                # --------------------------------------------
+                # Person tracking
+                # --------------------------------------------
+
+                tracks = tracker.update(
+                    detections
+                )
+
+                # --------------------------------------------
+                # Zone detection
+                # --------------------------------------------
+
+                zone_results = (
+                    zone_detector.check_tracks(
+                        tracks
+                    )
+                )
+
+                # --------------------------------------------
+                # Intrusion rule
+                # --------------------------------------------
+
+                events = intrusion_rule.evaluate(
+                    zone_results
+                )
+
+                # --------------------------------------------
+                # Draw zones
+                # --------------------------------------------
+
+                for zone in zones:
+
+                    polygon = np.array(
+                        zone["points"],
+                        dtype=np.int32,
+                    )
+
+                    cv2.polylines(
+                        frame,
+                        [polygon],
+                        True,
+                        (0, 255, 255),
+                        3,
+                    )
+
+                    x, y = polygon[0]
+
+                    cv2.putText(
+                        frame,
+                        zone["name"],
+                        (x, y - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8,
+                        (0, 255, 255),
+                        2,
+                    )
+
+                # --------------------------------------------
+                # Draw tracked people
+                # --------------------------------------------
+
+                for track in tracks:
+
+                    x1, y1, x2, y2 = (
+                        track["box"]
+                    )
+
+                    track_id = track[
+                        "track_id"
+                    ]
+
+                    state = track[
+                        "state"
+                    ]
+
+                    cv2.rectangle(
+                        frame,
+                        (x1, y1),
+                        (x2, y2),
+                        (0, 255, 0),
+                        2,
+                    )
+
+                    label = (
+                        f"Person {track_id} "
+                        f"| {state}"
+                    )
+
+                    cv2.putText(
+                        frame,
+                        label,
+                        (
+                            x1,
+                            max(
+                                30,
+                                y1 - 10
+                            ),
+                        ),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (0, 255, 0),
+                        2,
+                    )
+
+                # --------------------------------------------
+                # Process intrusion events
+                # --------------------------------------------
+
+                for event in events:
+
+                    total_events += 1
+
+                    # ----------------------------------------
+                    # Create event in database
+                    # ----------------------------------------
+
+                    event_id = (
+                        event_database.create_event(
+                            event_type=event[
+                                "event_type"
+                            ],
+                            severity=event[
+                                "severity"
+                            ],
+                            camera_id=camera_id,
+                            zone_id=event[
+                                "zone_id"
+                            ],
+                            zone_name=event[
+                                "zone_name"
+                            ],
+                            track_id=event[
+                                "track_id"
+                            ],
+                            message=event[
+                                "message"
+                            ],
+                            model_version=(
+                                INTRUSION_MODEL_VERSION
+                            ),
+                            evidence_path=None,
+                        )
+                    )
+
+                    # ----------------------------------------
+                    # Start evidence capture
+                    # ----------------------------------------
+
+                    evidence_path = (
+                        evidence_recorder
+                        .start_event_capture(
+                            event_type=event[
+                                "event_type"
+                            ],
+                            event_id=event_id,
+                        )
+                    )
+
+                    # ----------------------------------------
+                    # Save evidence path
+                    # ----------------------------------------
+
+                    if evidence_path is not None:
+
+                        event_database.update_evidence_path(
+                            event_id=event_id,
+                            evidence_path=str(
+                                evidence_path
+                            ),
+                        )
+
+                    # ----------------------------------------
+                    # Log event
+                    # ----------------------------------------
+
+                    print(
+                        f"[INTRUSION EVENT] "
+                        f"Frame={frame_index} "
+                        f"EventID={event_id} "
+                        f"Track={event['track_id']} "
+                        f"Zone={event['zone_name']} "
+                        f"Severity={event['severity']} "
+                        f"Status=NEW"
+                    )
+
+                    if evidence_path is not None:
+
+                        print(
+                            f"[EVIDENCE STARTED] "
+                            f"EventID={event_id} "
+                            f"Path={evidence_path}"
+                        )
+
+                    else:
+
+                        print(
+                            f"[EVIDENCE WARNING] "
+                            f"EventID={event_id} "
+                            f"Evidence capture "
+                            f"could not be started."
+                        )
+
+                    # ----------------------------------------
+                    # Display intrusion alert
+                    # ----------------------------------------
+
+                    cv2.putText(
+                        frame,
+                        "!!! INTRUSION DETECTED !!!",
+                        (50, 60),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1.0,
+                        (0, 0, 255),
+                        3,
+                    )
+
+                    cv2.putText(
+                        frame,
+                        event["message"],
+                        (50, 100),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7,
+                        (0, 0, 255),
+                        2,
+                    )
+
+            # ------------------------------------------------
+            # Write processed frame
+            # ------------------------------------------------
+
+            writer.write(
+                frame
+            )
+
+            frame_index += 1
+
+            # ------------------------------------------------
+            # Progress
+            # ------------------------------------------------
+
+            progress_interval = max(
                 1,
                 total_frames // 10,
             )
-            == 0
-        ):
 
-            progress = (
+            if (
                 frame_index
-                / total_frames
-                * 100
-            )
+                % progress_interval
+                == 0
+            ):
 
-            print(
-                f"Progress: "
-                f"{progress:.1f}%"
-            )
+                progress = (
+                    frame_index
+                    / total_frames
+                    * 100
+                    if total_frames > 0
+                    else 0
+                )
 
-    # --------------------------------------------------
-    # Finalize evidence recording
-    # --------------------------------------------------
+                print(
+                    f"Progress: "
+                    f"{progress:.1f}%"
+                )
 
-    evidence_recorder.finalize()
+    finally:
 
-    # --------------------------------------------------
-    # Cleanup
-    # --------------------------------------------------
+        # ----------------------------------------------------
+        # Finalize evidence recording
+        # ----------------------------------------------------
 
-    writer.release()
+        if evidence_recorder is not None:
 
-    source.release()
+            try:
 
-    camera_database.close()
+                evidence_recorder.finalize()
 
-    event_database.close()
+            except Exception as error:
 
-    # --------------------------------------------------
+                print(
+                    f"[CLEANUP WARNING] "
+                    f"Evidence finalization failed: "
+                    f"{error}"
+                )
+
+        # ----------------------------------------------------
+        # Release writer
+        # ----------------------------------------------------
+
+        if writer is not None:
+
+            try:
+
+                writer.release()
+
+            except Exception as error:
+
+                print(
+                    f"[CLEANUP WARNING] "
+                    f"Video writer release failed: "
+                    f"{error}"
+                )
+
+        # ----------------------------------------------------
+        # Release source
+        # ----------------------------------------------------
+
+        if source is not None:
+
+            try:
+
+                source.release()
+
+            except Exception as error:
+
+                print(
+                    f"[CLEANUP WARNING] "
+                    f"Video source release failed: "
+                    f"{error}"
+                )
+
+        # ----------------------------------------------------
+        # Close camera database
+        # ----------------------------------------------------
+
+        if camera_database is not None:
+
+            try:
+
+                camera_database.close()
+
+            except Exception as error:
+
+                print(
+                    f"[CLEANUP WARNING] "
+                    f"Camera database close failed: "
+                    f"{error}"
+                )
+
+        # ----------------------------------------------------
+        # Close event database
+        # ----------------------------------------------------
+
+        if event_database is not None:
+
+            try:
+
+                event_database.close()
+
+            except Exception as error:
+
+                print(
+                    f"[CLEANUP WARNING] "
+                    f"Event database close failed: "
+                    f"{error}"
+                )
+
+    # --------------------------------------------------------
     # Final summary
-    # --------------------------------------------------
+    # --------------------------------------------------------
 
     print("=" * 60)
 
@@ -708,6 +918,10 @@ def main():
 
     print("=" * 60)
 
+
+# ============================================================
+# Entry point
+# ============================================================
 
 if __name__ == "__main__":
     main()

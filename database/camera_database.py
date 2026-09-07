@@ -7,13 +7,11 @@ DATABASE_PATH = Path("database/hotel_security.db")
 
 
 class CameraDatabase:
-
     def __init__(self, database_path=DATABASE_PATH):
         self.database_path = Path(database_path)
-
         self.database_path.parent.mkdir(
             parents=True,
-            exist_ok=True
+            exist_ok=True,
         )
 
         self.connection = sqlite3.connect(
@@ -25,7 +23,6 @@ class CameraDatabase:
         self._create_tables()
 
     def _create_tables(self):
-
         self.connection.execute(
             """
             CREATE TABLE IF NOT EXISTS cameras (
@@ -33,17 +30,12 @@ class CameraDatabase:
                 name TEXT NOT NULL,
                 location TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'OFFLINE',
-
                 last_seen TEXT,
-
                 fps REAL,
                 width INTEGER,
                 height INTEGER,
-
                 consecutive_failures INTEGER NOT NULL DEFAULT 0,
-
                 last_error TEXT,
-
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
@@ -57,9 +49,34 @@ class CameraDatabase:
         camera_id,
         name,
         location,
-        status="OFFLINE"
+        status="OFFLINE",
     ):
-        now = datetime.now(timezone.utc).isoformat()
+        if not camera_id:
+            raise ValueError(
+                "camera_id is required"
+            )
+
+        if not name:
+            raise ValueError(
+                "camera name is required"
+            )
+
+        if not location:
+            raise ValueError(
+                "camera location is required"
+            )
+
+        if status not in {
+            "ONLINE",
+            "OFFLINE",
+        }:
+            raise ValueError(
+                f"Unsupported camera status: {status}"
+            )
+
+        now = datetime.now(
+            timezone.utc
+        ).isoformat()
 
         self.connection.execute(
             """
@@ -79,27 +96,25 @@ class CameraDatabase:
                 location,
                 status,
                 now,
-                now
-            )
+                now,
+            ),
         )
 
         self.connection.commit()
 
     def get_camera(self, camera_id):
-
         cursor = self.connection.execute(
             """
             SELECT *
             FROM cameras
             WHERE camera_id = ?
             """,
-            (camera_id,)
+            (camera_id,),
         )
 
         return cursor.fetchone()
 
     def get_all_cameras(self):
-
         cursor = self.connection.execute(
             """
             SELECT *
@@ -120,11 +135,24 @@ class CameraDatabase:
         error=None,
         consecutive_failures=None,
     ):
+        if status not in {
+            "ONLINE",
+            "OFFLINE",
+        }:
+            raise ValueError(
+                f"Unsupported camera status: {status}"
+            )
 
-        now = datetime.now(timezone.utc).isoformat()
+        if self.get_camera(camera_id) is None:
+            raise ValueError(
+                f"Camera not found: {camera_id}"
+            )
+
+        now = datetime.now(
+            timezone.utc
+        ).isoformat()
 
         if status == "ONLINE":
-
             self.connection.execute(
                 """
                 UPDATE cameras
@@ -150,10 +178,14 @@ class CameraDatabase:
                 ),
             )
 
-        elif status == "OFFLINE":
-
+        else:
             if consecutive_failures is None:
                 consecutive_failures = 1
+
+            if consecutive_failures < 1:
+                raise ValueError(
+                    "consecutive_failures must be at least 1"
+                )
 
             self.connection.execute(
                 """
@@ -174,12 +206,6 @@ class CameraDatabase:
                 ),
             )
 
-        else:
-
-            raise ValueError(
-                f"Unsupported camera status: {status}"
-            )
-
         self.connection.commit()
 
     def record_failure(
@@ -187,15 +213,39 @@ class CameraDatabase:
         camera_id,
         consecutive_failures,
         error="No frame received",
+        failure_threshold=3,
     ):
+        """
+        Record a camera frame failure.
 
-        now = datetime.now(timezone.utc).isoformat()
+        The caller supplies the configured failure threshold.
+        The camera becomes OFFLINE once the failure count reaches
+        that threshold.
+        """
 
-        # Camera becomes OFFLINE after 3 consecutive failures.
-        # Before that, keep it ONLINE but record the failures.
+        if failure_threshold < 1:
+            raise ValueError(
+                "failure_threshold must be at least 1"
+            )
+
+        if consecutive_failures < 1:
+            raise ValueError(
+                "consecutive_failures must be at least 1"
+            )
+
+        if self.get_camera(camera_id) is None:
+            raise ValueError(
+                f"Camera not found: {camera_id}"
+            )
+
+        now = datetime.now(
+            timezone.utc
+        ).isoformat()
+
         status = (
             "OFFLINE"
-            if consecutive_failures >= 3
+            if consecutive_failures
+            >= failure_threshold
             else "ONLINE"
         )
 
@@ -221,19 +271,17 @@ class CameraDatabase:
         self.connection.commit()
 
     def delete_camera(self, camera_id):
-
         self.connection.execute(
             """
             DELETE FROM cameras
             WHERE camera_id = ?
             """,
-            (camera_id,)
+            (camera_id,),
         )
 
         self.connection.commit()
 
     def close(self):
-
         if self.connection:
             self.connection.close()
             self.connection = None
