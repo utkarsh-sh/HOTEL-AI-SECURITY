@@ -2,6 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import "./App.css";
 
 import {
+  login,
+  getStoredUser,
+  logout,
   getCameras,
   getEvents,
   getHealth,
@@ -10,11 +13,8 @@ import {
   resolveEvent,
   markFalsePositive,
   getEventAuditLogs,
+  getEventEvidence,
 } from "./api";
-
-
-const API_BASE_URL = "http://127.0.0.1:8000";
-
 
 function App() {
   const [cameras, setCameras] = useState([]);
@@ -23,25 +23,147 @@ function App() {
 
   const [selectedEvent, setSelectedEvent] = useState(null);
 
+  // Secure evidence video state
+  const [evidenceUrl, setEvidenceUrl] = useState(null);
+  const [evidenceLoading, setEvidenceLoading] = useState(false);
+  const [evidenceError, setEvidenceError] = useState(null);
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [actionLoading, setActionLoading] = useState(null);
   const [auditLogs, setAuditLogs] = useState([]);
   const [auditLoading, setAuditLoading] = useState(false);
 
-  const loadEventAuditLogs = useCallback(async (eventId) => {
-  setAuditLoading(true);
+  // =========================
+  // AUTHENTICATION
+  // =========================
 
-  try {
-    const result = await getEventAuditLogs(eventId);
-    setAuditLogs(result.logs);
-  } catch (error) {
-    console.error("Failed to load audit logs:", error);
-    setAuditLogs([]);
-  } finally {
-    setAuditLoading(false);
+  const [authUser, setAuthUser] = useState(() => getStoredUser());
+  const [loginUsername, setLoginUsername] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [loginError, setLoginError] = useState(null);
+
+  async function handleLogin(event) {
+    event.preventDefault();
+
+    setLoginLoading(true);
+    setLoginError(null);
+
+    try {
+      const result = await login(
+        loginUsername.trim(),
+        loginPassword
+      );
+
+      setAuthUser(result.user);
+      setLoginPassword("");
+      setError(null);
+    } catch (err) {
+      console.error("Login failed:", err);
+      setLoginError(err.message);
+    } finally {
+      setLoginLoading(false);
+    }
   }
-}, []);
+
+  function handleLogout() {
+    logout();
+
+    setAuthUser(null);
+    setCameras([]);
+    setEvents([]);
+    setSystemHealth(null);
+    setSelectedEvent(null);
+    setEvidenceUrl(null);
+    setEvidenceError(null);
+    setEvidenceLoading(false);
+    setAuditLogs([]);
+    setError(null);
+  }
+
+  // =========================
+  // AUDIT HISTORY
+  // =========================
+
+  const loadEventAuditLogs = useCallback(async (eventId) => {
+    setAuditLoading(true);
+
+    try {
+      const result = await getEventAuditLogs(eventId);
+      setAuditLogs(result.logs);
+    } catch (error) {
+      console.error("Failed to load audit logs:", error);
+      setAuditLogs([]);
+    } finally {
+      setAuditLoading(false);
+    }
+  }, []);
+
+  // =========================
+  // SECURE EVIDENCE LOADING
+  // =========================
+
+  useEffect(() => {
+    let objectUrl = null;
+    let cancelled = false;
+
+    async function loadEvidence() {
+      if (!selectedEvent?.evidence_path) {
+        setEvidenceUrl(null);
+        setEvidenceLoading(false);
+        setEvidenceError(null);
+        return;
+      }
+
+      setEvidenceLoading(true);
+      setEvidenceError(null);
+      setEvidenceUrl(null);
+
+      try {
+        const videoBlob = await getEventEvidence(
+          selectedEvent.id
+        );
+
+        if (cancelled) {
+          return;
+        }
+
+        objectUrl = URL.createObjectURL(videoBlob);
+
+        setEvidenceUrl(objectUrl);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+
+        console.error(
+          "Failed to load event evidence:",
+          error
+        );
+
+        setEvidenceError(error.message);
+      } finally {
+        if (!cancelled) {
+          setEvidenceLoading(false);
+        }
+      }
+    }
+
+    loadEvidence();
+
+    return () => {
+      cancelled = true;
+
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [selectedEvent]);
+
+  // =========================
+  // DASHBOARD DATA
+  // =========================
 
   async function loadDashboardData() {
     try {
@@ -57,7 +179,6 @@ function App() {
       setCameras(cameraData.cameras || []);
       setEvents(eventData.events || []);
       setSystemHealth(healthData);
-
     } catch (err) {
       console.error("Dashboard API error:", err);
       setError(err.message);
@@ -66,8 +187,12 @@ function App() {
     }
   }
 
-
   useEffect(() => {
+    if (!authUser) {
+      setLoading(false);
+      return;
+    }
+
     loadDashboardData();
 
     const interval = setInterval(
@@ -76,8 +201,11 @@ function App() {
     );
 
     return () => clearInterval(interval);
-  }, []);
+  }, [authUser]);
 
+  // =========================
+  // DASHBOARD CALCULATIONS
+  // =========================
 
   const onlineCameras = useMemo(() => {
     return cameras.filter(
@@ -85,15 +213,15 @@ function App() {
     );
   }, [cameras]);
 
-
   const activeEvents = useMemo(() => {
     return events.filter((event) =>
-      ["NEW", "ACKNOWLEDGED", "DISPATCHED"].includes(
-        event.status
-      )
+      [
+        "NEW",
+        "ACKNOWLEDGED",
+        "DISPATCHED",
+      ].includes(event.status)
     );
   }, [events]);
-
 
   const highSeverityEvents = useMemo(() => {
     return activeEvents.filter(
@@ -101,9 +229,11 @@ function App() {
     );
   }, [activeEvents]);
 
-
   const recentEvents = events.slice(0, 5);
 
+  // =========================
+  // FORMATTERS
+  // =========================
 
   function formatTime(timestamp) {
     if (!timestamp) {
@@ -118,7 +248,6 @@ function App() {
       second: "2-digit",
     });
   }
-
 
   function formatDate(timestamp) {
     if (!timestamp) {
@@ -137,7 +266,6 @@ function App() {
     });
   }
 
-
   function getSeverityClass(severity) {
     if (severity === "HIGH") {
       return "high";
@@ -150,86 +278,231 @@ function App() {
     return "low";
   }
 
+  // =========================
+  // EVENT MODAL
+  // =========================
 
   const openEvent = (event) => {
-  setSelectedEvent(event);
-  loadEventAuditLogs(event.id);
-};
-
+    setSelectedEvent(event);
+    setEvidenceUrl(null);
+    setEvidenceError(null);
+    setEvidenceLoading(false);
+    loadEventAuditLogs(event.id);
+  };
 
   const closeEvent = () => {
-  setSelectedEvent(null);
-  setAuditLogs([]);
-};
+    setSelectedEvent(null);
+    setEvidenceUrl(null);
+    setEvidenceError(null);
+    setEvidenceLoading(false);
+    setAuditLogs([]);
+  };
 
-  async function performEventAction(action, eventId) {
-  try {
-    setActionLoading(`${action}-${eventId}`);
-    setError(null);
+  // =========================
+  // EVENT ACTIONS
+  // =========================
 
-    let response;
+  async function performEventAction(
+    action,
+    eventId
+  ) {
+    try {
+      setActionLoading(`${action}-${eventId}`);
+      setError(null);
 
-    if (action === "acknowledge") {
-      response = await acknowledgeEvent(eventId);
-    }
+      let response;
 
-    if (action === "dispatch") {
-      response = await dispatchEvent(eventId);
-    }
-
-    if (action === "resolve") {
-      const resolution = window.prompt(
-        "Enter resolution details:",
-        "Security team verified and resolved the event."
-      );
-
-      if (resolution === null) {
-        return;
+      if (action === "acknowledge") {
+        response = await acknowledgeEvent(eventId);
       }
 
-      response = await resolveEvent(eventId, resolution);
-    }
-
-    if (action === "false-positive") {
-      const resolution = window.prompt(
-        "Why is this a false positive?",
-        "Operator verified that the person was authorized to enter the area."
-      );
-
-      if (resolution === null) {
-        return;
+      if (action === "dispatch") {
+        response = await dispatchEvent(eventId);
       }
 
-      response = await markFalsePositive(eventId, resolution);
+      if (action === "resolve") {
+        const resolution = window.prompt(
+          "Enter resolution details:",
+          "Security team verified and resolved the event."
+        );
+
+        if (resolution === null) {
+          return;
+        }
+
+        response = await resolveEvent(
+          eventId,
+          resolution
+        );
+      }
+
+      if (action === "false-positive") {
+        const resolution = window.prompt(
+          "Why is this a false positive?",
+          "Operator verified that the person was authorized to enter the area."
+        );
+
+        if (resolution === null) {
+          return;
+        }
+
+        response = await markFalsePositive(
+          eventId,
+          resolution
+        );
+      }
+
+      if (!response?.event) {
+        throw new Error(
+          "API did not return the updated event."
+        );
+      }
+
+      const updatedEvent = response.event;
+
+      setEvents((currentEvents) =>
+        currentEvents.map((event) =>
+          event.id === updatedEvent.id
+            ? updatedEvent
+            : event
+        )
+      );
+
+      setSelectedEvent(updatedEvent);
+
+      await loadEventAuditLogs(eventId);
+    } catch (err) {
+      console.error(
+        "Operator action failed:",
+        err
+      );
+
+      setError(err.message);
+    } finally {
+      setActionLoading(null);
     }
-
-    if (!response?.event) {
-      throw new Error("API did not return the updated event.");
-    }
-
-    const updatedEvent = response.event;
-
-    // Update event list immediately.
-    setEvents((currentEvents) =>
-      currentEvents.map((event) =>
-        event.id === updatedEvent.id ? updatedEvent : event
-      )
-    );
-
-    // Update currently opened event immediately.
-    setSelectedEvent(updatedEvent);
-
-    // Refresh audit history after operator action.
-    await loadEventAuditLogs(eventId);
-
-  } catch (err) {
-    console.error("Operator action failed:", err);
-    setError(err.message);
-  } finally {
-    setActionLoading(null);
   }
-}
 
+  // =========================
+  // LOGIN SCREEN
+  // =========================
+
+  if (!authUser) {
+    return (
+      <div className="login-page">
+        <div className="login-card">
+
+          <div className="login-brand">
+
+            <div className="login-brand-icon">
+              🛡
+            </div>
+
+            <div>
+              <h1>Hotel AI</h1>
+              <span>SECURITY CENTER</span>
+            </div>
+
+          </div>
+
+          <div className="login-heading">
+
+            <p className="login-eyebrow">
+              SECURE ACCESS
+            </p>
+
+            <h2>
+              Security Operations Login
+            </h2>
+
+            <p>
+              Sign in to access the hotel security
+              monitoring console.
+            </p>
+
+          </div>
+
+          {loginError && (
+            <div className="login-error">
+
+              <strong>
+                Authentication failed
+              </strong>
+
+              <span>
+                {loginError}
+              </span>
+
+            </div>
+          )}
+
+          <form
+            className="login-form"
+            onSubmit={handleLogin}
+          >
+
+            <label>
+              Username
+
+              <input
+                type="text"
+                value={loginUsername}
+                onChange={(event) =>
+                  setLoginUsername(
+                    event.target.value
+                  )
+                }
+                placeholder="Enter username"
+                autoComplete="username"
+                required
+              />
+            </label>
+
+            <label>
+              Password
+
+              <input
+                type="password"
+                value={loginPassword}
+                onChange={(event) =>
+                  setLoginPassword(
+                    event.target.value
+                  )
+                }
+                placeholder="Enter password"
+                autoComplete="current-password"
+                required
+              />
+            </label>
+
+            <button
+              type="submit"
+              className="login-button"
+              disabled={loginLoading}
+            >
+              {loginLoading
+                ? "Signing in..."
+                : "Sign In"}
+            </button>
+
+          </form>
+
+          <div className="login-notice">
+            Authorized hotel security personnel only.
+          </div>
+
+          <div className="login-footer">
+            Hotel AI Security System
+          </div>
+
+        </div>
+      </div>
+    );
+  }
+
+  // =========================
+  // MAIN DASHBOARD
+  // =========================
 
   return (
     <div className="app">
@@ -252,7 +525,6 @@ function App() {
           </div>
 
         </div>
-
 
         <nav className="navigation">
 
@@ -282,7 +554,6 @@ function App() {
           </button>
 
         </nav>
-
 
         <div className="sidebar-bottom">
 
@@ -318,7 +589,6 @@ function App() {
 
       </aside>
 
-
       {/* =========================
           MAIN CONTENT
       ========================= */}
@@ -339,7 +609,6 @@ function App() {
 
           </div>
 
-
           <div className="operator">
 
             <div className="operator-avatar">
@@ -349,26 +618,34 @@ function App() {
             <div>
 
               <strong>
-                Security Operator
+                {authUser.full_name}
               </strong>
 
               <span>
-                Monitoring Console
+                {authUser.role.replaceAll(
+                  "_",
+                  " "
+                )}
               </span>
 
             </div>
 
+            <button
+              className="logout-button"
+              onClick={handleLogout}
+            >
+              Logout
+            </button>
+
           </div>
 
         </header>
-
 
         {/* =========================
             API ERROR
         ========================= */}
 
         {error && (
-
           <div className="api-error">
 
             <strong>
@@ -380,9 +657,7 @@ function App() {
             </span>
 
           </div>
-
         )}
-
 
         {/* =========================
             SYSTEM BANNER
@@ -393,8 +668,10 @@ function App() {
           <div className="system-banner-left">
 
             <div className="live-indicator">
+
               <span></span>
               LIVE
+
             </div>
 
             <div>
@@ -411,7 +688,6 @@ function App() {
             </div>
 
           </div>
-
 
           <div className="system-time">
 
@@ -430,8 +706,6 @@ function App() {
           </div>
 
         </section>
-        
-               
 
         {/* =========================
             STATISTICS
@@ -458,6 +732,7 @@ function App() {
             </strong>
 
             <div className="stat-footer success">
+
               <span>●</span>
 
               {onlineCameras.length} camera
@@ -465,10 +740,10 @@ function App() {
                 ? "s"
                 : ""}{" "}
               online
+
             </div>
 
           </div>
-
 
           <div className="stat-card">
 
@@ -498,7 +773,6 @@ function App() {
 
           </div>
 
-
           <div className="stat-card">
 
             <div className="stat-header">
@@ -522,7 +796,6 @@ function App() {
             </div>
 
           </div>
-
 
           <div className="stat-card">
 
@@ -550,13 +823,11 @@ function App() {
 
         </section>
 
-
         {/* =========================
             MAIN GRID
         ========================= */}
 
         <section className="dashboard-grid">
-
 
           {/* CAMERA PANEL */}
 
@@ -581,7 +852,6 @@ function App() {
               </button>
 
             </div>
-
 
             {cameras.length === 0 ? (
 
@@ -610,7 +880,6 @@ function App() {
 
                   </div>
 
-
                   <div className="camera-placeholder">
 
                     <div className="camera-placeholder-icon">
@@ -629,7 +898,6 @@ function App() {
 
                 </div>
 
-
                 <div className="camera-info">
 
                   <div>
@@ -644,10 +912,10 @@ function App() {
 
                   </div>
 
-
                   <div
                     className={
-                      cameras[0].status === "ONLINE"
+                      cameras[0].status ===
+                      "ONLINE"
                         ? "camera-health"
                         : "camera-health offline"
                     }
@@ -666,7 +934,6 @@ function App() {
             )}
 
           </div>
-
 
           {/* EVENTS PANEL */}
 
@@ -692,7 +959,6 @@ function App() {
 
             </div>
 
-
             <div className="event-list">
 
               {recentEvents.length === 0 ? (
@@ -708,7 +974,9 @@ function App() {
                   <button
                     className="event-item event-clickable"
                     key={event.id}
-                    onClick={() => openEvent(event)}
+                    onClick={() =>
+                      openEvent(event)
+                    }
                   >
 
                     <div
@@ -723,7 +991,6 @@ function App() {
 
                     </div>
 
-
                     <div className="event-content">
 
                       <div className="event-title-row">
@@ -734,8 +1001,10 @@ function App() {
 
                         <span
                           className={
-                            event.status === "RESOLVED" ||
-                            event.status === "FALSE_POSITIVE"
+                            event.status ===
+                              "RESOLVED" ||
+                            event.status ===
+                              "FALSE_POSITIVE"
                               ? "event-status resolved-status"
                               : "event-status"
                           }
@@ -745,11 +1014,9 @@ function App() {
 
                       </div>
 
-
                       <p>
                         {event.message}
                       </p>
-
 
                       <div className="event-meta">
 
@@ -770,9 +1037,10 @@ function App() {
 
                     </div>
 
-
                     <span className="event-time">
-                      {formatTime(event.timestamp)}
+                      {formatTime(
+                        event.timestamp
+                      )}
                     </span>
 
                   </button>
@@ -787,13 +1055,11 @@ function App() {
 
         </section>
 
-
         {/* =========================
             BOTTOM GRID
         ========================= */}
 
         <section className="bottom-grid">
-
 
           <div className="panel health-panel">
 
@@ -812,7 +1078,6 @@ function App() {
               </div>
 
             </div>
-
 
             <div className="health-list">
 
@@ -842,7 +1107,6 @@ function App() {
 
               </div>
 
-
               <div className="health-row">
 
                 <div>
@@ -865,7 +1129,6 @@ function App() {
                 </div>
 
               </div>
-
 
               <div className="health-row">
 
@@ -894,7 +1157,6 @@ function App() {
 
           </div>
 
-
           <div className="panel response-panel">
 
             <div className="panel-header">
@@ -912,7 +1174,6 @@ function App() {
               </div>
 
             </div>
-
 
             <div className="operator-message">
 
@@ -950,7 +1211,6 @@ function App() {
 
         </section>
 
-
         <footer className="footer">
 
           <span>
@@ -964,7 +1224,6 @@ function App() {
         </footer>
 
       </main>
-
 
       {/* =========================
           EVENT DETAILS MODAL
@@ -998,7 +1257,6 @@ function App() {
 
               </div>
 
-
               <button
                 className="modal-close"
                 onClick={closeEvent}
@@ -1009,8 +1267,9 @@ function App() {
 
             </div>
 
-
-            {/* Evidence */}
+            {/* =========================
+                EVIDENCE
+            ========================= */}
 
             <div className="evidence-section">
 
@@ -1038,22 +1297,82 @@ function App() {
 
               </div>
 
-
               {selectedEvent.evidence_path ? (
 
-                <video
-                  className="evidence-video"
-                  controls
-                  preload="metadata"
-                  src={`${API_BASE_URL}/events/${selectedEvent.id}/evidence?v=${selectedEvent.id}-${selectedEvent.evidence_path}`}
-                >
-                  Your browser does not support
-                  video playback.
-                </video>
+                evidenceLoading ? (
+
+                  <div className="no-evidence">
+
+                    <div className="no-evidence-icon">
+                      ◌
+                    </div>
+
+                    <strong>
+                      Loading evidence...
+                    </strong>
+
+                    <span>
+                      Securely retrieving the recorded
+                      event clip.
+                    </span>
+
+                  </div>
+
+                ) : evidenceError ? (
+
+                  <div className="no-evidence">
+
+                    <div className="no-evidence-icon">
+                      !
+                    </div>
+
+                    <strong>
+                      Evidence could not be loaded
+                    </strong>
+
+                    <span>
+                      {evidenceError}
+                    </span>
+
+                  </div>
+
+                ) : evidenceUrl ? (
+
+                  <video
+                    className="evidence-video"
+                    controls
+                    preload="metadata"
+                    src={evidenceUrl}
+                  >
+                    Your browser does not support
+                    video playback.
+                  </video>
+
+                ) : (
+
+                  <div className="no-evidence">
+
+                    <div className="no-evidence-icon">
+                      ◌
+                    </div>
+
+                    <strong>
+                      Evidence unavailable
+                    </strong>
+
+                    <span>
+                      The recorded evidence clip
+                      could not be loaded.
+                    </span>
+
+                  </div>
+
+                )
 
               ) : (
 
                 <div className="no-evidence">
+
                   <div className="no-evidence-icon">
                     ◌
                   </div>
@@ -1073,8 +1392,9 @@ function App() {
 
             </div>
 
-
-            {/* Event information */}
+            {/* =========================
+                EVENT INFORMATION
+            ========================= */}
 
             <div className="event-details-grid">
 
@@ -1089,7 +1409,6 @@ function App() {
                 </strong>
 
               </div>
-
 
               <div className="detail-item">
 
@@ -1107,7 +1426,6 @@ function App() {
 
               </div>
 
-
               <div className="detail-item">
 
                 <span>
@@ -1120,7 +1438,6 @@ function App() {
 
               </div>
 
-
               <div className="detail-item">
 
                 <span>
@@ -1132,7 +1449,6 @@ function App() {
                 </strong>
 
               </div>
-
 
               <div className="detail-item">
 
@@ -1147,7 +1463,6 @@ function App() {
 
               </div>
 
-
               <div className="detail-item">
 
                 <span>
@@ -1160,7 +1475,6 @@ function App() {
                 </strong>
 
               </div>
-
 
               <div className="detail-item detail-wide">
 
@@ -1176,7 +1490,6 @@ function App() {
 
               </div>
 
-
               <div className="detail-item detail-wide">
 
                 <span>
@@ -1188,7 +1501,6 @@ function App() {
                 </strong>
 
               </div>
-
 
               <div className="detail-item detail-wide">
 
@@ -1202,7 +1514,6 @@ function App() {
                 </strong>
 
               </div>
-
 
               {selectedEvent.resolution && (
 
@@ -1221,61 +1532,97 @@ function App() {
               )}
 
             </div>
-            
-            {/* Audit History */}
-<div className="audit-history">
-  <div className="audit-history-header">
-    <span className="audit-history-label">
-      AUDIT HISTORY
-    </span>
-    <span className="audit-history-count">
-      {auditLogs.length} {auditLogs.length === 1 ? "entry" : "entries"}
-    </span>
-  </div>
 
-  {auditLoading ? (
-    <div className="audit-history-empty">
-      Loading audit history...
-    </div>
-  ) : auditLogs.length === 0 ? (
-    <div className="audit-history-empty">
-      No audit history available.
-    </div>
-  ) : (
-    <div className="audit-history-list">
-      {auditLogs.map((log) => (
-        <div
-          className="audit-history-item"
-          key={log.id}
-        >
-          <div className="audit-history-action">
-            {log.action
-              .replaceAll("_", " ")
-              .replace("EVENT ", "")}
-          </div>
+            {/* =========================
+                AUDIT HISTORY
+            ========================= */}
 
-          <div className="audit-history-details">
-            <span>
-              {log.actor}
-            </span>
+            <div className="audit-history">
 
-            <span>
-              {new Date(log.timestamp).toLocaleString()}
-            </span>
-          </div>
+              <div className="audit-history-header">
 
-          {log.details && (
-            <div className="audit-history-description">
-              {log.details}
+                <span className="audit-history-label">
+                  AUDIT HISTORY
+                </span>
+
+                <span className="audit-history-count">
+                  {auditLogs.length}{" "}
+                  {auditLogs.length === 1
+                    ? "entry"
+                    : "entries"}
+                </span>
+
+              </div>
+
+              {auditLoading ? (
+
+                <div className="audit-history-empty">
+                  Loading audit history...
+                </div>
+
+              ) : auditLogs.length === 0 ? (
+
+                <div className="audit-history-empty">
+                  No audit history available.
+                </div>
+
+              ) : (
+
+                <div className="audit-history-list">
+
+                  {auditLogs.map((log) => (
+
+                    <div
+                      className="audit-history-item"
+                      key={log.id}
+                    >
+
+                      <div className="audit-history-action">
+
+                        {log.action
+                          .replaceAll("_", " ")
+                          .replace(
+                            "EVENT ",
+                            ""
+                          )}
+
+                      </div>
+
+                      <div className="audit-history-details">
+
+                        <span>
+                          {log.actor}
+                        </span>
+
+                        <span>
+                          {new Date(
+                            log.timestamp
+                          ).toLocaleString()}
+                        </span>
+
+                      </div>
+
+                      {log.details && (
+
+                        <div className="audit-history-description">
+                          {log.details}
+                        </div>
+
+                      )}
+
+                    </div>
+
+                  ))}
+
+                </div>
+
+              )}
+
             </div>
-          )}
-        </div>
-      ))}
-    </div>
-  )}
-</div>
 
-                        {/* Footer */}
+            {/* =========================
+                MODAL FOOTER
+            ========================= */}
 
             <div className="modal-footer">
 
@@ -1288,6 +1635,7 @@ function App() {
 
                 {selectedEvent.status === "NEW" && (
                   <>
+
                     <button
                       className="modal-action false-positive"
                       disabled={
@@ -1301,10 +1649,12 @@ function App() {
                         )
                       }
                     >
+
                       {actionLoading ===
                       `false-positive-${selectedEvent.id}`
                         ? "Processing..."
                         : "False Positive"}
+
                     </button>
 
                     <button
@@ -1320,16 +1670,21 @@ function App() {
                         )
                       }
                     >
+
                       {actionLoading ===
                       `acknowledge-${selectedEvent.id}`
                         ? "Processing..."
                         : "Acknowledge"}
+
                     </button>
+
                   </>
                 )}
 
-                {selectedEvent.status === "ACKNOWLEDGED" && (
+                {selectedEvent.status ===
+                  "ACKNOWLEDGED" && (
                   <>
+
                     <button
                       className="modal-action false-positive"
                       disabled={
@@ -1343,10 +1698,12 @@ function App() {
                         )
                       }
                     >
+
                       {actionLoading ===
                       `false-positive-${selectedEvent.id}`
                         ? "Processing..."
                         : "False Positive"}
+
                     </button>
 
                     <button
@@ -1362,15 +1719,20 @@ function App() {
                         )
                       }
                     >
+
                       {actionLoading ===
                       `dispatch-${selectedEvent.id}`
                         ? "Processing..."
                         : "Dispatch"}
+
                     </button>
+
                   </>
                 )}
 
-                {selectedEvent.status === "DISPATCHED" && (
+                {selectedEvent.status ===
+                  "DISPATCHED" && (
+
                   <button
                     className="modal-action resolve"
                     disabled={
@@ -1384,11 +1746,14 @@ function App() {
                       )
                     }
                   >
+
                     {actionLoading ===
                     `resolve-${selectedEvent.id}`
                       ? "Processing..."
                       : "Resolve Event"}
+
                   </button>
+
                 )}
 
                 <button

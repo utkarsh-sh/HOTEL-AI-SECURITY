@@ -21,11 +21,22 @@ from backend.auth_dependencies import (
     require_roles,
 )
 
+from rules.event_workflow import (
+    validate_transition,
+    InvalidEventTransitionError,
+)
+
+
 app = FastAPI(
     title="Hotel AI Security API",
     description="Backend API for the Hotel AI CCTV Security System",
     version="0.3.0",
 )
+
+
+# ============================================================
+# CORS
+# ============================================================
 
 app.add_middleware(
     CORSMiddleware,
@@ -39,13 +50,58 @@ app.add_middleware(
 )
 
 
+# ============================================================
+# REQUEST MODELS
+# ============================================================
+
+
 class EventStatusUpdate(BaseModel):
     resolution: Optional[str] = None
 
 
 # ============================================================
+# EVENT WORKFLOW VALIDATION
+# ============================================================
+
+
+def validate_event_transition(
+    current_status: str,
+    new_status: str,
+) -> None:
+    """
+    Validate whether an event can move from its current
+    status to the requested new status.
+
+    The actual state-machine rules are defined in:
+        rules/event_workflow.py
+
+    Invalid transitions are returned to API clients as
+    HTTP 409 Conflict responses.
+    """
+
+    try:
+        validate_transition(
+            current_status=current_status,
+            new_status=new_status,
+        )
+
+    except InvalidEventTransitionError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=str(error),
+        )
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=409,
+            detail=str(error),
+        )
+
+
+# ============================================================
 # HEALTH
 # ============================================================
+
 
 @app.get("/health")
 def health_check():
@@ -59,6 +115,7 @@ def health_check():
 # ============================================================
 # AUTHENTICATION
 # ============================================================
+
 
 @app.post("/login")
 def login(
@@ -91,9 +148,11 @@ def login(
     finally:
         auth_service.close()
 
+
 # ============================================================
 # CAMERAS
 # ============================================================
+
 
 @app.get("/cameras")
 def get_cameras(
@@ -175,6 +234,7 @@ def get_camera_health(
 # EVENTS
 # ============================================================
 
+
 @app.get("/events")
 def get_events(
     status: Optional[str] = None,
@@ -242,6 +302,7 @@ def get_event(
 # EVENT EVIDENCE
 # ============================================================
 
+
 @app.get("/events/{event_id}/evidence")
 def get_event_evidence(
     event_id: int,
@@ -294,6 +355,7 @@ def get_event_evidence(
 # ACKNOWLEDGE EVENT
 # ============================================================
 
+
 @app.post("/events/{event_id}/acknowledge")
 def acknowledge_event(
     event_id: int,
@@ -315,6 +377,12 @@ def acknowledge_event(
                 status_code=404,
                 detail=f"Event {event_id} not found",
             )
+
+        # Validate state transition before modifying database.
+        validate_event_transition(
+            current_status=event["status"],
+            new_status="ACKNOWLEDGED",
+        )
 
         database.update_status(
             event_id=event_id,
@@ -345,6 +413,7 @@ def acknowledge_event(
 # DISPATCH EVENT
 # ============================================================
 
+
 @app.post("/events/{event_id}/dispatch")
 def dispatch_event(
     event_id: int,
@@ -366,6 +435,12 @@ def dispatch_event(
                 status_code=404,
                 detail=f"Event {event_id} not found",
             )
+
+        # Validate state transition before modifying database.
+        validate_event_transition(
+            current_status=event["status"],
+            new_status="DISPATCHED",
+        )
 
         database.update_status(
             event_id=event_id,
@@ -396,6 +471,7 @@ def dispatch_event(
 # RESOLVE EVENT
 # ============================================================
 
+
 @app.post("/events/{event_id}/resolve")
 def resolve_event(
     event_id: int,
@@ -419,6 +495,12 @@ def resolve_event(
                 detail=f"Event {event_id} not found",
             )
 
+        # Validate state transition before modifying database.
+        validate_event_transition(
+            current_status=event["status"],
+            new_status="RESOLVED",
+        )
+
         database.update_status(
             event_id=event_id,
             status="RESOLVED",
@@ -430,8 +512,10 @@ def resolve_event(
             entity_type="event",
             entity_id=event_id,
             actor=current_user["username"],
-            details=request.resolution
-            or "Security operator resolved event",
+            details=(
+                request.resolution
+                or "Security operator resolved event"
+            ),
         )
 
         updated_event = database.get_event(event_id)
@@ -449,6 +533,7 @@ def resolve_event(
 # ============================================================
 # FALSE POSITIVE
 # ============================================================
+
 
 @app.post("/events/{event_id}/false-positive")
 def mark_false_positive(
@@ -473,6 +558,12 @@ def mark_false_positive(
                 detail=f"Event {event_id} not found",
             )
 
+        # Validate state transition before modifying database.
+        validate_event_transition(
+            current_status=event["status"],
+            new_status="FALSE_POSITIVE",
+        )
+
         database.update_status(
             event_id=event_id,
             status="FALSE_POSITIVE",
@@ -484,8 +575,10 @@ def mark_false_positive(
             entity_type="event",
             entity_id=event_id,
             actor=current_user["username"],
-            details=request.resolution
-            or "Security operator marked event as false positive",
+            details=(
+                request.resolution
+                or "Security operator marked event as false positive"
+            ),
         )
 
         updated_event = database.get_event(event_id)
@@ -499,6 +592,10 @@ def mark_false_positive(
         database.close()
         audit_database.close()
 
+
+# ============================================================
+# AUDIT LOGS
+# ============================================================
 
 
 @app.get("/audit-logs")

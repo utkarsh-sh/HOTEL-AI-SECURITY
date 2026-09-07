@@ -5,6 +5,9 @@ from datetime import datetime, timezone
 
 DATABASE_PATH = Path("database/hotel_security.db")
 
+CURRENT_WORKFLOW_VERSION = "workflow-v2"
+LEGACY_WORKFLOW_VERSION = "legacy-v1"
+
 
 class EventDatabase:
 
@@ -12,9 +15,7 @@ class EventDatabase:
         self,
         database_path=DATABASE_PATH
     ):
-        self.database_path = Path(
-            database_path
-        )
+        self.database_path = Path(database_path)
 
         self.database_path.parent.mkdir(
             parents=True,
@@ -28,6 +29,10 @@ class EventDatabase:
         self.connection.row_factory = sqlite3.Row
 
         self._create_tables()
+
+    # ==========================================================
+    # DATABASE SETUP
+    # ==========================================================
 
     def _create_tables(self):
 
@@ -53,6 +58,9 @@ class EventDatabase:
 
                 model_version TEXT,
 
+                workflow_version TEXT NOT NULL
+                    DEFAULT 'legacy-v1',
+
                 evidence_path TEXT,
 
                 created_at TEXT NOT NULL,
@@ -68,12 +76,9 @@ class EventDatabase:
 
         self.connection.commit()
 
-        # --------------------------------------------------
-        # Database migration
-        # --------------------------------------------------
-        # If the existing database was created before
-        # evidence_path existed, add the column.
-        # --------------------------------------------------
+        # ------------------------------------------------------
+        # Migration: evidence_path
+        # ------------------------------------------------------
 
         columns = self.connection.execute(
             "PRAGMA table_info(events)"
@@ -94,6 +99,40 @@ class EventDatabase:
             )
 
             self.connection.commit()
+
+        # ------------------------------------------------------
+        # Migration: workflow_version
+        #
+        # Existing events are historical records, therefore
+        # they receive legacy-v1.
+        #
+        # New events explicitly receive workflow-v2.
+        # ------------------------------------------------------
+
+        columns = self.connection.execute(
+            "PRAGMA table_info(events)"
+        ).fetchall()
+
+        column_names = {
+            column["name"]
+            for column in columns
+        }
+
+        if "workflow_version" not in column_names:
+
+            self.connection.execute(
+                """
+                ALTER TABLE events
+                ADD COLUMN workflow_version TEXT
+                DEFAULT 'legacy-v1'
+                """
+            )
+
+            self.connection.commit()
+
+    # ==========================================================
+    # CREATE EVENT
+    # ==========================================================
 
     def create_event(
         self,
@@ -125,12 +164,18 @@ class EventDatabase:
                 message,
                 timestamp,
                 model_version,
+                workflow_version,
                 evidence_path,
-                created_at
+                created_at,
+                acknowledged_at,
+                dispatched_at,
+                resolved_at,
+                resolution
             )
             VALUES (
                 ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?
             )
             """,
             (
@@ -144,8 +189,13 @@ class EventDatabase:
                 message,
                 timestamp,
                 model_version,
+                CURRENT_WORKFLOW_VERSION,
                 evidence_path,
                 timestamp,
+                None,
+                None,
+                None,
+                None,
             )
         )
 
@@ -153,13 +203,17 @@ class EventDatabase:
 
         return cursor.lastrowid
 
+    # ==========================================================
+    # EVIDENCE
+    # ==========================================================
+
     def update_evidence_path(
         self,
         event_id,
         evidence_path,
     ):
 
-        self.connection.execute(
+        cursor = self.connection.execute(
             """
             UPDATE events
             SET evidence_path = ?
@@ -172,6 +226,16 @@ class EventDatabase:
         )
 
         self.connection.commit()
+
+        if cursor.rowcount != 1:
+
+            raise ValueError(
+                f"Event not found: {event_id}"
+            )
+
+    # ==========================================================
+    # READ OPERATIONS
+    # ==========================================================
 
     def get_event(
         self,
@@ -201,6 +265,37 @@ class EventDatabase:
 
         return cursor.fetchall()
 
+    # ==========================================================
+    # INTERNAL ATOMIC UPDATE
+    # ==========================================================
+
+    def _execute_atomic_transition(
+        self,
+        sql,
+        parameters,
+        event_id,
+        expected_status,
+        target_status,
+    ):
+
+        cursor = self.connection.execute(
+            sql,
+            parameters
+        )
+
+        if cursor.rowcount != 1:
+
+            raise ValueError(
+                "Atomic event transition failed: "
+                f"event {event_id} was expected to be "
+                f"{expected_status}, but its state changed "
+                f"before transition to {target_status}."
+            )
+
+    # ==========================================================
+    # EVENT LIFECYCLE
+    # ==========================================================
+
     def update_status(
         self,
         event_id,
@@ -208,89 +303,238 @@ class EventDatabase:
         resolution=None
     ):
 
-        now = datetime.now(
-            timezone.utc
-        ).isoformat()
+        supported_statuses = {
+            "ACKNOWLEDGED",
+            "DISPATCHED",
+            "RESOLVED",
+            "FALSE_POSITIVE",
+        }
 
-        if status == "ACKNOWLEDGED":
-
-            self.connection.execute(
-                """
-                UPDATE events
-                SET
-                    status = ?,
-                    acknowledged_at = ?
-                WHERE id = ?
-                """,
-                (
-                    status,
-                    now,
-                    event_id,
-                )
-            )
-
-        elif status == "DISPATCHED":
-
-            self.connection.execute(
-                """
-                UPDATE events
-                SET
-                    status = ?,
-                    dispatched_at = ?
-                WHERE id = ?
-                """,
-                (
-                    status,
-                    now,
-                    event_id,
-                )
-            )
-
-        elif status == "RESOLVED":
-
-            self.connection.execute(
-                """
-                UPDATE events
-                SET
-                    status = ?,
-                    resolved_at = ?,
-                    resolution = ?
-                WHERE id = ?
-                """,
-                (
-                    status,
-                    now,
-                    resolution,
-                    event_id,
-                )
-            )
-
-        elif status == "FALSE_POSITIVE":
-
-            self.connection.execute(
-                """
-                UPDATE events
-                SET
-                    status = ?,
-                    resolved_at = ?,
-                    resolution = ?
-                WHERE id = ?
-                """,
-                (
-                    status,
-                    now,
-                    resolution,
-                    event_id,
-                )
-            )
-
-        else:
+        if status not in supported_statuses:
 
             raise ValueError(
                 f"Unsupported event status: {status}"
             )
 
-        self.connection.commit()
+        if status in {
+            "RESOLVED",
+            "FALSE_POSITIVE",
+        }:
+
+            if (
+                resolution is None
+                or not str(resolution).strip()
+            ):
+                raise ValueError(
+                    f"{status} requires a non-empty resolution"
+                )
+
+        self.connection.execute(
+            "BEGIN IMMEDIATE"
+        )
+
+        try:
+
+            event = self.get_event(event_id)
+
+            if event is None:
+
+                raise ValueError(
+                    f"Event not found: {event_id}"
+                )
+
+            current_status = event["status"]
+
+            now = datetime.now(
+                timezone.utc
+            ).isoformat()
+
+            # --------------------------------------------------
+            # NEW -> ACKNOWLEDGED
+            # --------------------------------------------------
+
+            if status == "ACKNOWLEDGED":
+
+                expected_status = "NEW"
+
+                if current_status != expected_status:
+
+                    raise ValueError(
+                        "Invalid event transition: "
+                        f"{current_status} -> ACKNOWLEDGED"
+                    )
+
+                self._execute_atomic_transition(
+                    """
+                    UPDATE events
+                    SET
+                        status = ?,
+                        acknowledged_at = ?,
+                        dispatched_at = NULL,
+                        resolved_at = NULL,
+                        resolution = NULL
+                    WHERE id = ?
+                      AND status = ?
+                    """,
+                    (
+                        "ACKNOWLEDGED",
+                        now,
+                        event_id,
+                        expected_status,
+                    ),
+                    event_id,
+                    expected_status,
+                    "ACKNOWLEDGED",
+                )
+
+            # --------------------------------------------------
+            # ACKNOWLEDGED -> DISPATCHED
+            # --------------------------------------------------
+
+            elif status == "DISPATCHED":
+
+                expected_status = "ACKNOWLEDGED"
+
+                if current_status != expected_status:
+
+                    raise ValueError(
+                        "Invalid event transition: "
+                        f"{current_status} -> DISPATCHED"
+                    )
+
+                if event["acknowledged_at"] is None:
+
+                    raise ValueError(
+                        "Cannot dispatch an event without "
+                        "acknowledged_at"
+                    )
+
+                self._execute_atomic_transition(
+                    """
+                    UPDATE events
+                    SET
+                        status = ?,
+                        dispatched_at = ?,
+                        resolved_at = NULL,
+                        resolution = NULL
+                    WHERE id = ?
+                      AND status = ?
+                    """,
+                    (
+                        "DISPATCHED",
+                        now,
+                        event_id,
+                        expected_status,
+                    ),
+                    event_id,
+                    expected_status,
+                    "DISPATCHED",
+                )
+
+            # --------------------------------------------------
+            # DISPATCHED -> RESOLVED
+            # --------------------------------------------------
+
+            elif status == "RESOLVED":
+
+                expected_status = "DISPATCHED"
+
+                if current_status != expected_status:
+
+                    raise ValueError(
+                        "Invalid event transition: "
+                        f"{current_status} -> RESOLVED"
+                    )
+
+                if event["acknowledged_at"] is None:
+
+                    raise ValueError(
+                        "Cannot resolve an event without "
+                        "acknowledged_at"
+                    )
+
+                if event["dispatched_at"] is None:
+
+                    raise ValueError(
+                        "Cannot resolve an event without "
+                        "dispatched_at"
+                    )
+
+                self._execute_atomic_transition(
+                    """
+                    UPDATE events
+                    SET
+                        status = ?,
+                        resolved_at = ?,
+                        resolution = ?
+                    WHERE id = ?
+                      AND status = ?
+                    """,
+                    (
+                        "RESOLVED",
+                        now,
+                        str(resolution).strip(),
+                        event_id,
+                        expected_status,
+                    ),
+                    event_id,
+                    expected_status,
+                    "RESOLVED",
+                )
+
+            # --------------------------------------------------
+            # NEW / ACKNOWLEDGED -> FALSE_POSITIVE
+            # --------------------------------------------------
+
+            elif status == "FALSE_POSITIVE":
+
+                allowed_source_statuses = {
+                    "NEW",
+                    "ACKNOWLEDGED",
+                }
+
+                if current_status not in allowed_source_statuses:
+
+                    raise ValueError(
+                        "Invalid event transition: "
+                        f"{current_status} -> FALSE_POSITIVE"
+                    )
+
+                expected_status = current_status
+
+                self._execute_atomic_transition(
+                    """
+                    UPDATE events
+                    SET
+                        status = ?,
+                        dispatched_at = NULL,
+                        resolved_at = NULL,
+                        resolution = ?
+                    WHERE id = ?
+                      AND status = ?
+                    """,
+                    (
+                        "FALSE_POSITIVE",
+                        str(resolution).strip(),
+                        event_id,
+                        expected_status,
+                    ),
+                    event_id,
+                    expected_status,
+                    "FALSE_POSITIVE",
+                )
+
+            self.connection.commit()
+
+        except Exception:
+
+            self.connection.rollback()
+
+            raise
+
+    # ==========================================================
+    # CLOSE
+    # ==========================================================
 
     def close(self):
 
