@@ -13,6 +13,8 @@ import {
   resolveEvent,
   markFalsePositive,
   getEventAuditLogs,
+  getCameraHealthSummary,
+  getCameraHealth,
   getEventEvidence,
 } from "./api";
 
@@ -20,8 +22,10 @@ function App() {
   const [cameras, setCameras] = useState([]);
   const [events, setEvents] = useState([]);
   const [systemHealth, setSystemHealth] = useState(null);
+  const [cameraHealthSummary, setCameraHealthSummary] = useState(null);
 
   const [selectedEvent, setSelectedEvent] = useState(null);
+const [selectedCamera, setSelectedCamera] = useState(null);
 
   // Secure evidence video state
   const [evidenceUrl, setEvidenceUrl] = useState(null);
@@ -75,6 +79,7 @@ function App() {
     setEvents([]);
     setSystemHealth(null);
     setSelectedEvent(null);
+    setCameraHealthSummary(null);
     setEvidenceUrl(null);
     setEvidenceError(null);
     setEvidenceLoading(false);
@@ -165,27 +170,54 @@ function App() {
   // DASHBOARD DATA
   // =========================
 
+  const openCamera = async (camera) => {
+    try {
+      const health = await getCameraHealth(camera.camera_id);
+      setSelectedCamera({
+        ...camera,
+        health,
+      });
+    } catch (error) {
+      setSelectedCamera({
+        ...camera,
+        health: {
+          error: error.message,
+        },
+      });
+    }
+  };
+
+  const closeCamera = () => {
+    setSelectedCamera(null);
+  };
+
   async function loadDashboardData() {
     try {
       setError(null);
 
-      const [cameraData, eventData, healthData] =
-        await Promise.all([
-          getCameras(),
-          getEvents(),
-          getHealth(),
-        ]);
+    const [
+      cameraData,
+      eventData,
+      healthData,
+      cameraHealthSummaryData,
+    ] = await Promise.all([
+      getCameras(),
+      getEvents(),
+      getHealth(),
+      getCameraHealthSummary(),
+    ]);
 
-      setCameras(cameraData.cameras || []);
-      setEvents(eventData.events || []);
-      setSystemHealth(healthData);
-    } catch (err) {
-      console.error("Dashboard API error:", err);
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
+    setCameras(cameraData.cameras || []);
+    setEvents(eventData.events || []);
+    setSystemHealth(healthData);
+    setCameraHealthSummary(cameraHealthSummaryData);
+  } catch (err) {
+    console.error("Dashboard API error:", err);
+    setError(err.message);
+  } finally {
+    setLoading(false);
   }
+}
 
   useEffect(() => {
     if (!authUser) {
@@ -212,6 +244,52 @@ function App() {
       (camera) => camera.status === "ONLINE"
     );
   }, [cameras]);
+
+  const fleetHealth = useMemo(() => {
+  const summary = cameraHealthSummary || {};
+
+  const total = Number(
+    summary.total ??
+      summary.total_cameras ??
+      cameras.length
+  );
+
+  const online = Number(
+    summary.online ??
+      summary.online_cameras ??
+      onlineCameras.length
+  );
+
+  const offline = Number(
+    summary.offline ??
+      summary.offline_cameras ??
+      cameras.length - onlineCameras.length
+  );
+
+  const calculatedPercent =
+    total > 0
+      ? (online / total) * 100
+      : 0;
+
+  const healthPercent = Number(
+    summary.health_percent ??
+      summary.health_percentage ??
+      calculatedPercent
+  );
+
+  return {
+    total,
+    online,
+    offline,
+    healthPercent: Number.isFinite(healthPercent)
+      ? Math.max(0, Math.min(100, healthPercent))
+      : 0,
+  };
+}, [
+  cameraHealthSummary,
+  cameras.length,
+  onlineCameras.length,
+]);
 
   const activeEvents = useMemo(() => {
     return events.filter((event) =>
@@ -395,7 +473,7 @@ function App() {
           <div className="login-brand">
 
             <div className="login-brand-icon">
-              🛡
+              🛡️
             </div>
 
             <div>
@@ -506,6 +584,120 @@ function App() {
 
   return (
     <div className="app">
+  {selectedCamera && (
+    <div className="camera-detail-modal-overlay" onClick={closeCamera}>
+      <div
+        className="camera-detail-modal"
+        onClick={(event) => event.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="camera-detail-title"
+      >
+        <div className="camera-detail-header">
+          <div>
+            <h2 id="camera-detail-title">Camera Health Details</h2>
+            <p className="camera-detail-location">
+              {selectedCamera.name || "Unnamed Camera"}
+              {selectedCamera.location ? " - " + selectedCamera.location : ""}
+            </p>
+          </div>
+
+          <button
+            type="button"
+            className="camera-detail-close"
+            onClick={closeCamera}
+            aria-label="Close camera health details"
+          >
+            X
+          </button>
+        </div>
+
+        {selectedCamera.health?.error ? (
+          <div className="camera-detail-error">
+            Failed to load camera health: {selectedCamera.health.error}
+          </div>
+        ) : (
+          <>
+            <div className="camera-detail-status-row">
+              <span className="camera-detail-status">
+                {selectedCamera.health?.status || selectedCamera.status || "UNKNOWN"}
+              </span>
+            </div>
+
+            <div className="camera-detail-grid">
+              <div className="camera-detail-item">
+                <span>Camera ID</span>
+                <strong>{selectedCamera.camera_id || "--"}</strong>
+              </div>
+
+              <div className="camera-detail-item">
+                <span>Status</span>
+                <strong>
+                  {selectedCamera.health?.status || selectedCamera.status || "--"}
+                </strong>
+              </div>
+
+              <div className="camera-detail-item">
+                <span>FPS</span>
+                <strong>
+                  {selectedCamera.health?.fps ?? selectedCamera.fps ?? "--"}
+                </strong>
+              </div>
+
+              <div className="camera-detail-item">
+                <span>Resolution</span>
+                <strong>
+                  {selectedCamera.health?.width && selectedCamera.health?.height
+                    ? `${selectedCamera.health.width} x ${selectedCamera.health.height}`
+                    : selectedCamera.width && selectedCamera.height
+                    ? `${selectedCamera.width} x ${selectedCamera.height}`
+                    : "--"}
+                </strong>
+              </div>
+
+              <div className="camera-detail-item">
+                <span>Consecutive Failures</span>
+                <strong>
+                  {selectedCamera.health?.consecutive_failures ??
+                    selectedCamera.consecutive_failures ??
+                    0}
+                </strong>
+              </div>
+
+              <div className="camera-detail-item">
+                <span>Last Seen</span>
+                <strong>
+                  {selectedCamera.health?.last_seen ||
+                    selectedCamera.last_seen ||
+                    "--"}
+                </strong>
+              </div>
+            </div>
+
+            <div className="camera-detail-events">
+              <h3>Camera Information</h3>
+
+              <div className="camera-detail-event">
+                <span>Last Error</span>
+                <strong>
+                  {selectedCamera.health?.last_error ||
+                    selectedCamera.last_error ||
+                    "None"}
+                </strong>
+              </div>
+            </div>
+          </>
+        )}
+
+        <div className="camera-detail-footer">
+          <button type="button" onClick={closeCamera}>
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  )}
+
 
       {/* =========================
           SIDEBAR
@@ -516,7 +708,7 @@ function App() {
         <div className="brand">
 
           <div className="brand-icon">
-            🛡
+            🛡️
           </div>
 
           <div>
@@ -823,6 +1015,168 @@ function App() {
 
         </section>
 
+        {/* =========================
+            CAMERA FLEET HEALTH
+        ========================= */}
+
+        <section className="fleet-health-section">
+
+          <div className="panel fleet-health-panel">
+
+            <div className="panel-header">
+
+              <div>
+                <p className="panel-label">
+                  RELIABILITY
+                </p>
+
+                <h3>
+                  Camera Fleet Health
+                </h3>
+              </div>
+
+              <div className="fleet-health-badge">
+                <span></span>
+                {fleetHealth.healthPercent.toFixed(0)}% Healthy
+              </div>
+
+            </div>
+
+            <div className="fleet-health-summary">
+
+              <div className="fleet-health-stat">
+                <span>Total Cameras</span>
+                <strong>{fleetHealth.total}</strong>
+              </div>
+
+              <div className="fleet-health-stat online">
+                <span>Online</span>
+                <strong>{fleetHealth.online}</strong>
+              </div>
+
+              <div className="fleet-health-stat offline">
+                <span>Offline</span>
+                <strong>{fleetHealth.offline}</strong>
+              </div>
+
+              <div className="fleet-health-stat health-percent">
+                <span>Fleet Health</span>
+                <strong>
+                  {fleetHealth.healthPercent.toFixed(0)}%
+                </strong>
+              </div>
+
+            </div>
+
+            <div className="fleet-camera-list">
+
+              {cameras.length === 0 ? (
+                <div className="fleet-health-empty">
+                  No cameras registered.
+                </div>
+              ) : (
+                cameras.map((camera) => {
+                  const isOnline = camera.status === "ONLINE";
+
+                  const resolution =
+                    camera.width && camera.height
+                      ? `${camera.width} × ${camera.height}`
+                      : "--";
+
+                  return (
+                    <div
+                      className={`fleet-camera-row ${
+                        isOnline ? "" : "offline"
+                      }`}
+                      key={camera.camera_id}
+                      onClick={() => openCamera(camera)}
+                      onKeyDown={(event) => {
+                        if (
+                          event.key === "Enter" ||
+                          event.key === " "
+                        ) {
+                          event.preventDefault();
+                          openCamera(camera);
+                        }
+                      }}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`View health details for ${camera.name}`}
+                    >
+
+                      <div className="fleet-camera-main">
+
+                        <div
+                          className={
+                            isOnline
+                              ? "fleet-camera-status online"
+                              : "fleet-camera-status offline"
+                          }
+                        >
+                          <span></span>
+                          {camera.status}
+                        </div>
+
+                        <div>
+
+                          <strong>
+                            {camera.name}
+                          </strong>
+
+                          <span>
+                            {camera.camera_id} • {camera.location}
+                          </span>
+
+                        </div>
+
+                      </div>
+
+                      <div className="fleet-camera-metrics">
+
+                        <div>
+                          <span>FPS</span>
+                          <strong>
+                            {camera.fps != null
+                              ? Number(camera.fps).toFixed(1)
+                              : "--"}
+                          </strong>
+                        </div>
+
+                        <div>
+                          <span>Resolution</span>
+                          <strong>
+                            {resolution}
+                          </strong>
+                        </div>
+
+                        <div>
+                          <span>Failures</span>
+                          <strong>
+                            {camera.consecutive_failures ?? 0}
+                          </strong>
+                        </div>
+
+                        <div>
+                          <span>Last Seen</span>
+                          <strong>
+                            {camera.last_seen
+                              ? formatTime(camera.last_seen)
+                              : "Never"}
+                          </strong>
+                        </div>
+
+                      </div>
+
+                    </div>
+                  );
+                })
+              )}
+
+            </div>
+
+          </div>
+
+        </section>
         {/* =========================
             MAIN GRID
         ========================= */}

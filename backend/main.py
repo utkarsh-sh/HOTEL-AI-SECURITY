@@ -171,6 +171,53 @@ def get_cameras(
     finally:
         database.close()
 
+@app.get("/cameras/health/summary")
+def get_camera_health_summary(
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Return fleet-level camera health statistics.
+
+    The CameraDatabase is the single source of truth for
+    persisted camera health state.
+    """
+
+    database = CameraDatabase()
+
+    try:
+        cameras = database.get_all_cameras()
+
+        total_cameras = len(cameras)
+
+        online = sum(
+            1
+            for camera in cameras
+            if camera["status"] == "ONLINE"
+        )
+
+        offline = sum(
+            1
+            for camera in cameras
+            if camera["status"] == "OFFLINE"
+        )
+
+        if total_cameras == 0:
+            health_percentage = 0.0
+        else:
+            health_percentage = round(
+                (online / total_cameras) * 100,
+                2,
+            )
+
+        return {
+            "total_cameras": total_cameras,
+            "online": online,
+            "offline": offline,
+            "health_percentage": health_percentage,
+        }
+
+    finally:
+        database.close()
 
 @app.get("/cameras/{camera_id}")
 def get_camera(

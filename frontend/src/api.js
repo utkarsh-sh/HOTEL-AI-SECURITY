@@ -40,21 +40,26 @@ async function request(endpoint) {
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-    headers,
-  });
+  const response = await fetch(
+    `${API_BASE_URL}${endpoint}`,
+    {
+      headers,
+    }
+  );
 
   if (!response.ok) {
-    let message = `${response.status} ${response.statusText}`;
+    let message =
+      `${response.status} ${response.statusText}`;
 
     try {
-      const errorData = await response.json();
+      const errorData =
+        await response.json();
 
       if (errorData.detail) {
         message = errorData.detail;
       }
     } catch {
-      // Keep default error message.
+      // Ignore JSON parsing errors.
     }
 
     throw new Error(
@@ -65,7 +70,10 @@ async function request(endpoint) {
   return response.json();
 }
 
-async function postRequest(endpoint, body = {}) {
+async function postRequest(
+  endpoint,
+  body = {}
+) {
   const token = getAccessToken();
 
   const headers = {
@@ -76,23 +84,28 @@ async function postRequest(endpoint, body = {}) {
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
+  const response = await fetch(
+    `${API_BASE_URL}${endpoint}`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    }
+  );
 
   if (!response.ok) {
-    let message = `${response.status} ${response.statusText}`;
+    let message =
+      `${response.status} ${response.statusText}`;
 
     try {
-      const errorData = await response.json();
+      const errorData =
+        await response.json();
 
       if (errorData.detail) {
         message = errorData.detail;
       }
     } catch {
-      // Keep default error message.
+      // Ignore JSON parsing errors.
     }
 
     throw new Error(
@@ -103,31 +116,48 @@ async function postRequest(endpoint, body = {}) {
   return response.json();
 }
 
-export async function login(username, password) {
-  const formData = new URLSearchParams();
+export async function login(
+  username,
+  password
+) {
+  const formData =
+    new URLSearchParams();
 
-  formData.append("username", username);
-  formData.append("password", password);
+  formData.append(
+    "username",
+    username
+  );
 
-  const response = await fetch(`${API_BASE_URL}/login`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: formData.toString(),
-  });
+  formData.append(
+    "password",
+    password
+  );
+
+  const response = await fetch(
+    `${API_BASE_URL}/login`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type":
+          "application/x-www-form-urlencoded",
+      },
+      body: formData.toString(),
+    }
+  );
 
   if (!response.ok) {
-    let message = `${response.status} ${response.statusText}`;
+    let message =
+      `${response.status} ${response.statusText}`;
 
     try {
-      const errorData = await response.json();
+      const errorData =
+        await response.json();
 
       if (errorData.detail) {
         message = errorData.detail;
       }
     } catch {
-      // Keep default error message.
+      // Ignore JSON parsing errors.
     }
 
     throw new Error(
@@ -135,7 +165,8 @@ export async function login(username, password) {
     );
   }
 
-  const data = await response.json();
+  const data =
+    await response.json();
 
   localStorage.setItem(
     TOKEN_KEY,
@@ -162,21 +193,45 @@ export async function getHealth() {
   return request("/health");
 }
 
-export async function getCameraHealth(cameraId) {
-  return request(`/cameras/${cameraId}/health`);
+export async function getCameraHealth(
+  cameraId
+) {
+  return request(
+    `/cameras/${cameraId}/health`
+  );
 }
 
-export async function getEvent(eventId) {
-  return request(`/events/${eventId}`);
+/*
+ * Camera fleet health summary.
+ *
+ * Returns aggregate health information
+ * for all registered cameras.
+ */
+export async function getCameraHealthSummary() {
+  return request(
+    "/cameras/health/summary"
+  );
 }
 
-export async function acknowledgeEvent(eventId) {
+export async function getEvent(
+  eventId
+) {
+  return request(
+    `/events/${eventId}`
+  );
+}
+
+export async function acknowledgeEvent(
+  eventId
+) {
   return postRequest(
     `/events/${eventId}/acknowledge`
   );
 }
 
-export async function dispatchEvent(eventId) {
+export async function dispatchEvent(
+  eventId
+) {
   return postRequest(
     `/events/${eventId}/dispatch`
   );
@@ -207,55 +262,67 @@ export async function markFalsePositive(
 }
 
 export async function getAuditLogs() {
-  return request("/audit-logs");
+  return request(
+    "/audit-logs"
+  );
 }
 
-export async function getEventAuditLogs(eventId) {
-  const result = await getAuditLogs();
+export async function getEventAuditLogs(
+  eventId
+) {
+  const result =
+    await getAuditLogs();
+
+  const logs =
+    result.logs.filter(
+      (log) =>
+        log.entity_type === "event" &&
+        String(log.entity_id) ===
+          String(eventId)
+    );
 
   return {
-    total: result.logs.filter(
-      (log) =>
-        log.entity_type === "event" &&
-        String(log.entity_id) === String(eventId)
-    ).length,
-
-    logs: result.logs.filter(
-      (log) =>
-        log.entity_type === "event" &&
-        String(log.entity_id) === String(eventId)
-    ),
+    total: logs.length,
+    logs,
   };
 }
 
-export async function getEventEvidence(eventId) {
-  const token = getAccessToken();
+export async function getEventEvidence(
+  eventId
+) {
+  const token =
+    getAccessToken();
 
   const headers = {};
 
   if (token) {
-    headers.Authorization = `Bearer ${token}`;
+    headers.Authorization =
+      `Bearer ${token}`;
   }
 
-  const response = await fetch(
-    `${API_BASE_URL}/events/${eventId}/evidence`,
-    {
-      method: "GET",
-      headers,
-    }
-  );
+  const response =
+    await fetch(
+      `${API_BASE_URL}/events/${eventId}/evidence`,
+      {
+        method: "GET",
+        headers,
+      }
+    );
 
   if (!response.ok) {
-    let message = `${response.status} ${response.statusText}`;
+    let message =
+      `${response.status} ${response.statusText}`;
 
     try {
-      const errorData = await response.json();
+      const errorData =
+        await response.json();
 
       if (errorData.detail) {
-        message = errorData.detail;
+        message =
+          errorData.detail;
       }
     } catch {
-      // Response may be a video/error body that is not JSON.
+      // Ignore JSON parsing errors.
     }
 
     throw new Error(

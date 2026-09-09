@@ -1665,3 +1665,384 @@ button {
   background: rgba(255, 255, 255, 0.07);
   color: #edf3f9;
 }
+/* =========================
+   CAMERA FLEET HEALTH
+========================= */
+
+.fleet-health-section {
+  margin-top: 18px;
+}
+
+.fleet-health-panel {
+  padding: 18px;
+}
+
+.fleet-health-badge {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  border: 1px solid rgba(76, 204, 153, 0.18);
+  border-radius: 7px;
+  background: rgba(76, 204, 153, 0.05);
+  color: #4dcc99;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.fleet-health-badge span,
+.fleet-camera-status span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+
+.fleet-health-summary {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.fleet-health-stat {
+  padding: 12px 14px;
+  border: 1px solid #202a36;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.fleet-health-stat span {
+  display: block;
+  color: #68778a;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.fleet-health-stat strong {
+  display: block;
+  margin-top: 6px;
+  color: #edf3f9;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.fleet-health-stat.online strong {
+  color: #4dcc99;
+}
+
+.fleet-health-stat.offline strong {
+  color: #db6666;
+}
+
+.fleet-health-stat.health-percent strong {
+  color: #75a9dc;
+}
+
+.fleet-camera-list {
+  margin-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.055);
+}
+
+.fleet-camera-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.045);
+}
+
+.fleet-camera-row:last-child {
+  border-bottom: 0;
+  padding-bottom: 2px;
+}
+
+.fleet-camera-main {
+  min-width: 230px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.fleet-camera-main > div:last-child {
+  min-width: 0;
+}
+
+.fleet-camera-main strong {
+  display: block;
+  color: #e5edf6;
+  font-size: 11px;
+}
+
+.fleet-camera-main > div:last-child > span {
+  display: block;
+  margin-top: 4px;
+  color: #627287;
+  font-size: 9px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fleet-camera-status {
+  min-width: 66px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #4dcc99;
+  font-size: 8px;
+  font-weight: 800;
+}
+
+.fleet-camera-status.offline {
+  color: #db6666;
+}
+
+.fleet-camera-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(70px, auto));
+  gap: 18px;
+  text-align: right;
+}
+
+.fleet-camera-metrics span {
+  display: block;
+  color: #56667a;
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.fleet-camera-metrics strong {
+  display: block;
+  margin-top: 4px;
+  color: #aab9ca;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.fleet-health-empty {
+  padding: 24px 0 8px;
+  color: #5e6d80;
+  text-align: center;
+  font-size: 10px;
+}
+
+@media (max-width: 1000px) {
+
+  .fleet-health-summary {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .fleet-camera-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .fleet-camera-main {
+    width: 100%;
+  }
+
+  .fleet-camera-metrics {
+    width: 100%;
+    grid-template-columns: repeat(4, 1fr);
+    text-align: left;
+  }
+
+}
+
+@media (max-width: 620px) {
+
+  .fleet-health-summary {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .fleet-camera-metrics {
+    grid-template-columns: 1fr 1fr;
+    row-gap: 12px;
+  }
+
+}
+/* Camera Health Details Modal */
+.camera-detail-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.65);
+}
+
+.camera-detail-modal {
+  width: min(680px, 100%);
+  max-height: 90vh;
+  overflow-y: auto;
+  border-radius: 16px;
+  padding: 24px;
+  background: #ffffff;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+.camera-detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.camera-detail-header h2 {
+  margin: 0;
+}
+
+.camera-detail-location {
+  margin: 6px 0 0;
+  opacity: 0.7;
+}
+
+.camera-detail-close {
+  border: 0;
+  background: transparent;
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.camera-detail-status-row {
+  margin-bottom: 20px;
+}
+
+.camera-detail-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.camera-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.camera-detail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 14px;
+  border-radius: 10px;
+  background: #f5f7fa;
+}
+
+.camera-detail-item span {
+  font-size: 12px;
+  opacity: 0.65;
+}
+
+.camera-detail-item strong {
+  overflow-wrap: anywhere;
+}
+
+.camera-detail-events {
+  margin-top: 20px;
+}
+
+.camera-detail-events h3 {
+  margin: 0 0 10px;
+}
+
+.camera-detail-event {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 14px;
+  border-radius: 10px;
+  background: #f5f7fa;
+}
+
+.camera-detail-event span {
+  font-size: 12px;
+  opacity: 0.65;
+}
+
+.camera-detail-error {
+  padding: 14px;
+  border-radius: 10px;
+  margin-bottom: 20px;
+  background: #fff3f3;
+  color: #b42318;
+}
+
+.camera-detail-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 24px;
+}
+
+.camera-detail-footer button {
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 18px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+@media (max-width: 600px) {
+  .camera-detail-modal-overlay {
+    padding: 12px;
+  }
+
+  .camera-detail-modal {
+    padding: 18px;
+  }
+
+  .camera-detail-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* CAMERA_MODAL_CONTRAST_FIX */
+.camera-detail-modal {
+  color: #172033;
+}
+
+.camera-detail-modal h2,
+.camera-detail-modal h3,
+.camera-detail-modal strong {
+  color: #172033;
+}
+
+.camera-detail-modal .camera-detail-location {
+  color: #526070;
+}
+
+.camera-detail-modal .camera-detail-item span,
+.camera-detail-modal .camera-detail-event span {
+  color: #667085;
+  opacity: 1;
+}
+
+.camera-detail-modal .camera-detail-item strong,
+.camera-detail-modal .camera-detail-event strong {
+  color: #172033;
+}
+
+.camera-detail-modal .camera-detail-close {
+  color: #172033;
+}
+
+.camera-detail-modal .camera-detail-footer button {
+  background: #172033;
+  color: #ffffff;
+}
