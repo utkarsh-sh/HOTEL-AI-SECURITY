@@ -1,0 +1,16 @@
+﻿{
+  "cameras": [
+    {
+      "camera_id": "CAM-001",
+      "name": "Main Lobby Camera",
+      "location": "Main Lobby",
+      "source_type": "file",
+      "source": "data/input/01_person_tracking_intrusion.mp4",
+      "ai_fps": 5.0,
+      "reconnect": {
+        "max_attempts": 3,
+        "delay_seconds": 1.0
+      }
+    }
+  ]
+}

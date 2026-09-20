@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -13,8 +14,6 @@ from ai.camera_health import (
 )
 from ai.camera_health_events import (
     CameraHealthEventService,
-    CAMERA_OFFLINE_EVENT,
-    CAMERA_RECOVERED_EVENT,
 )
 from ai.evidence_recorder import EvidenceRecorder
 
@@ -23,24 +22,22 @@ from database.camera_database import CameraDatabase
 
 from rules.intrusion_rules import IntrusionRule
 
-from video.source import FileVideoSource
+from video.camera_config import load_camera_configs
+from video.frame_sampler import FrameSampler
+from video.source_factory import create_video_source
 
 
 # ============================================================
 # Configuration
 # ============================================================
 
-VIDEO_PATH = "data/input/01_person_tracking_intrusion.mp4"
+CAMERA_CONFIG_PATH = "configs/cameras.json"
 ZONE_PATH = "configs/zones.json"
-OUTPUT_PATH = "data/output/intrusion_detection_video.mp4"
+OUTPUT_DIRECTORY = "data/output"
 EVIDENCE_DIRECTORY = "data/output/events"
-
-AI_FPS = 5.0
 
 PRE_EVENT_SECONDS = 5
 POST_EVENT_SECONDS = 5
-
-CAMERA_ID = "CAM-001"
 
 CAMERA_FAILURE_THRESHOLD = 3
 
@@ -53,19 +50,89 @@ INTRUSION_MODEL_VERSION = "prototype-v1"
 # ============================================================
 
 def load_zones(path):
-    """
-    Load configured security zones from JSON.
-    """
+    """Load configured security zones from JSON."""
 
     with open(
         path,
         "r",
         encoding="utf-8",
     ) as file:
-
         config = json.load(file)
 
     return config["zones"]
+
+
+def get_capture_metadata(source):
+    """
+    Read video metadata from the underlying OpenCV capture.
+
+    Returns:
+        source_fps, total_frames, width, height
+    """
+
+    capture = getattr(
+        source,
+        "capture",
+        None,
+    )
+
+    if capture is None:
+        raise RuntimeError(
+            "Video source has no active capture."
+        )
+
+    source_fps = float(
+        capture.get(
+            cv2.CAP_PROP_FPS
+        )
+    )
+
+    total_frames = int(
+        capture.get(
+            cv2.CAP_PROP_FRAME_COUNT
+        )
+    )
+
+    width = int(
+        capture.get(
+            cv2.CAP_PROP_FRAME_WIDTH
+        )
+    )
+
+    height = int(
+        capture.get(
+            cv2.CAP_PROP_FRAME_HEIGHT
+        )
+    )
+
+    return (
+        source_fps,
+        total_frames,
+        width,
+        height,
+    )
+
+
+def normalize_source_fps(source_fps):
+    """
+    Ensure a usable FPS value.
+
+    RTSP streams may report 0 or an invalid FPS.
+    """
+
+    if source_fps <= 0:
+        return 25.0
+
+    return source_fps
+
+
+def is_finite_source(camera_config):
+    """Return True for recorded/file sources."""
+
+    return (
+        camera_config.source_type.lower().strip()
+        == "file"
+    )
 
 
 # ============================================================
@@ -88,291 +155,340 @@ def main():
     frame_index = 0
     ai_frames = 0
 
-    # --------------------------------------------------------
-    # Load video
-    # --------------------------------------------------------
+    try:
 
-    source = FileVideoSource(
-        VIDEO_PATH
-    )
+        # ----------------------------------------------------
+        # Load camera configuration
+        # ----------------------------------------------------
 
-    source.open()
-
-    capture = source.capture
-
-    source_fps = capture.get(
-        cv2.CAP_PROP_FPS
-    )
-
-    total_frames = int(
-        capture.get(
-            cv2.CAP_PROP_FRAME_COUNT
-        )
-    )
-
-    width = int(
-        capture.get(
-            cv2.CAP_PROP_FRAME_WIDTH
-        )
-    )
-
-    height = int(
-        capture.get(
-            cv2.CAP_PROP_FRAME_HEIGHT
-        )
-    )
-
-    duration = (
-        total_frames / source_fps
-        if source_fps > 0
-        else 0
-    )
-
-    print(
-        f"Resolution : "
-        f"{width} x {height}"
-    )
-
-    print(
-        f"Source FPS : "
-        f"{source_fps:.2f}"
-    )
-
-    print(
-        f"Frames     : "
-        f"{total_frames}"
-    )
-
-    print(
-        f"Duration   : "
-        f"{duration:.2f}s"
-    )
-
-    print(
-        f"AI FPS     : "
-        f"{AI_FPS}"
-    )
-
-    # --------------------------------------------------------
-    # Load AI components
-    # --------------------------------------------------------
-
-    detector = PersonDetector()
-
-    tracker = PersonTracker()
-
-    zones = load_zones(
-        ZONE_PATH
-    )
-
-    zone_detector = ZoneDetector(
-        zones
-    )
-
-    intrusion_rule = IntrusionRule(
-        persistence_frames=3
-    )
-
-    # --------------------------------------------------------
-    # Initialize databases
-    # --------------------------------------------------------
-
-    event_database = EventDatabase(
-        "database/hotel_security.db"
-    )
-
-    camera_database = CameraDatabase(
-        "database/hotel_security.db"
-    )
-
-    camera_health_events = CameraHealthEventService(
-        event_database=event_database
-    )
-
-    camera_id = CAMERA_ID
-
-    print(
-        "Event database initialized."
-    )
-
-    print(
-        "Camera database initialized."
-    )
-
-    # --------------------------------------------------------
-    # Verify camera registration
-    # --------------------------------------------------------
-
-    camera = camera_database.get_camera(
-        camera_id
-    )
-
-    if camera is None:
-
-        raise RuntimeError(
-            f"Camera {camera_id} is not registered."
+        camera_configs = load_camera_configs(
+            CAMERA_CONFIG_PATH
         )
 
-    print(
-        f"Camera registered: "
-        f"{camera['name']} "
-        f"({camera['location']})"
-    )
+        if not camera_configs:
+            raise RuntimeError(
+                "No cameras configured."
+            )
 
-    # --------------------------------------------------------
-    # Camera health monitor
-    # --------------------------------------------------------
+        # Stage 15E currently runs one camera at a time.
+        camera_config = camera_configs[0]
 
-    camera_health = CameraHealthMonitor(
-        camera_id=camera_id,
-        database=camera_database,
-        failure_threshold=CAMERA_FAILURE_THRESHOLD,
-    )
-
-    print(
-        f"Camera health monitor initialized: "
-        f"{camera_id}"
-    )
-
-    print(
-        f"Failure threshold: "
-        f"{CAMERA_FAILURE_THRESHOLD}"
-    )
-
-    print(
-        f"Persisted status: "
-        f"{camera['status']}"
-    )
-
-    print(
-        f"Persisted failures: "
-        f"{camera['consecutive_failures']}"
-    )
-
-    # --------------------------------------------------------
-    # Evidence recorder
-    # --------------------------------------------------------
-
-    evidence_recorder = EvidenceRecorder(
-        output_directory=EVIDENCE_DIRECTORY,
-        fps=source_fps,
-        pre_event_seconds=PRE_EVENT_SECONDS,
-        post_event_seconds=POST_EVENT_SECONDS,
-    )
-
-    print(
-        "Evidence recorder initialized."
-    )
-
-    print(
-        f"Evidence directory: "
-        f"{EVIDENCE_DIRECTORY}"
-    )
-
-    print(
-        f"Pre-event window: "
-        f"{PRE_EVENT_SECONDS}s"
-    )
-
-    print(
-        f"Post-event window: "
-        f"{POST_EVENT_SECONDS}s"
-    )
-
-    # --------------------------------------------------------
-    # Display loaded components
-    # --------------------------------------------------------
-
-    print("-" * 60)
-
-    print(
-        "Detector loaded."
-    )
-
-    print(
-        "Tracker loaded."
-    )
-
-    print(
-        f"Zones loaded: "
-        f"{len(zones)}"
-    )
-
-    for zone in zones:
+        camera_id = camera_config.camera_id
 
         print(
-            f"  - {zone['zone_id']}: "
-            f"{zone['name']}"
+            f"Camera       : "
+            f"{camera_config.name}"
         )
 
-    print(
-        "Intrusion rule loaded."
-    )
-
-    print(
-        "Camera health monitor loaded."
-    )
-
-    print(
-        "Camera health event service loaded."
-    )
-
-    print(
-        "Evidence recorder loaded."
-    )
-
-    print("-" * 60)
-
-    # --------------------------------------------------------
-    # Output video
-    # --------------------------------------------------------
-
-    fourcc = cv2.VideoWriter_fourcc(
-        *"mp4v"
-    )
-
-    writer = cv2.VideoWriter(
-        OUTPUT_PATH,
-        fourcc,
-        source_fps,
-        (width, height),
-    )
-
-    if not writer.isOpened():
-
-        raise RuntimeError(
-            f"Could not create output video: "
-            f"{OUTPUT_PATH}"
+        print(
+            f"Camera ID    : "
+            f"{camera_id}"
         )
 
-    # --------------------------------------------------------
-    # Frame sampling
-    # --------------------------------------------------------
+        print(
+            f"Location     : "
+            f"{camera_config.location}"
+        )
 
-    sample_interval = max(
-        1,
-        round(
-            source_fps / AI_FPS
-        ),
-    )
+        print(
+            f"Source type  : "
+            f"{camera_config.source_type}"
+        )
 
-    print(
-        f"AI sample interval: "
-        f"every {sample_interval} frames"
-    )
+        print(
+            f"AI FPS       : "
+            f"{camera_config.ai_fps}"
+        )
 
-    print(
-        f"Effective AI FPS: "
-        f"{source_fps / sample_interval:.2f}"
-    )
+        # ----------------------------------------------------
+        # Create configured video source
+        # ----------------------------------------------------
 
-    print("-" * 60)
+        source = create_video_source(
+            camera_config
+        )
 
-    # --------------------------------------------------------
-    # Main processing loop
-    # --------------------------------------------------------
+        source.open()
 
-    try:
+        (
+            source_fps,
+            total_frames,
+            width,
+            height,
+        ) = get_capture_metadata(source)
+
+        source_fps = normalize_source_fps(
+            source_fps
+        )
+
+        finite_source = is_finite_source(
+            camera_config
+        )
+
+        duration = (
+            total_frames / source_fps
+            if finite_source
+            and total_frames > 0
+            else 0
+        )
+
+        print("-" * 60)
+
+        print(
+            f"Resolution   : "
+            f"{width} x {height}"
+        )
+
+        print(
+            f"Source FPS   : "
+            f"{source_fps:.2f}"
+        )
+
+        if finite_source:
+            print(
+                f"Frames       : "
+                f"{total_frames}"
+            )
+
+            print(
+                f"Duration     : "
+                f"{duration:.2f}s"
+            )
+
+        else:
+            print(
+                "Frames       : continuous RTSP stream"
+            )
+
+            print(
+                "Duration     : continuous"
+            )
+
+        # ----------------------------------------------------
+        # Frame sampler
+        # ----------------------------------------------------
+
+        sampler = FrameSampler(
+            source_fps=source_fps,
+            target_fps=camera_config.ai_fps,
+        )
+
+        print(
+            f"AI FPS       : "
+            f"{sampler.target_fps:.2f}"
+        )
+
+        print("-" * 60)
+
+        # ----------------------------------------------------
+        # Load AI components
+        # ----------------------------------------------------
+
+        detector = PersonDetector()
+
+        tracker = PersonTracker()
+
+        zones = load_zones(
+            ZONE_PATH
+        )
+
+        zone_detector = ZoneDetector(
+            zones
+        )
+
+        intrusion_rule = IntrusionRule(
+            persistence_frames=3
+        )
+
+        # ----------------------------------------------------
+        # Initialize databases
+        # ----------------------------------------------------
+
+        event_database = EventDatabase(
+            "database/hotel_security.db"
+        )
+
+        camera_database = CameraDatabase(
+            "database/hotel_security.db"
+        )
+
+        camera_health_events = CameraHealthEventService(
+            event_database=event_database
+        )
+
+        print(
+            "Event database initialized."
+        )
+
+        print(
+            "Camera database initialized."
+        )
+
+        # ----------------------------------------------------
+        # Verify camera registration
+        # ----------------------------------------------------
+
+        camera = camera_database.get_camera(
+            camera_id
+        )
+
+        if camera is None:
+            raise RuntimeError(
+                f"Camera {camera_id} is not registered."
+            )
+
+        print(
+            f"Camera registered: "
+            f"{camera['name']} "
+            f"({camera['location']})"
+        )
+
+        # ----------------------------------------------------
+        # Camera health monitor
+        # ----------------------------------------------------
+
+        camera_health = CameraHealthMonitor(
+            camera_id=camera_id,
+            database=camera_database,
+            failure_threshold=CAMERA_FAILURE_THRESHOLD,
+        )
+
+        print(
+            f"Camera health monitor initialized: "
+            f"{camera_id}"
+        )
+
+        print(
+            f"Failure threshold: "
+            f"{CAMERA_FAILURE_THRESHOLD}"
+        )
+
+        print(
+            f"Persisted status: "
+            f"{camera['status']}"
+        )
+
+        print(
+            f"Persisted failures: "
+            f"{camera['consecutive_failures']}"
+        )
+
+        # ----------------------------------------------------
+        # Evidence recorder
+        # ----------------------------------------------------
+
+        evidence_recorder = EvidenceRecorder(
+            output_directory=EVIDENCE_DIRECTORY,
+            fps=source_fps,
+            pre_event_seconds=PRE_EVENT_SECONDS,
+            post_event_seconds=POST_EVENT_SECONDS,
+        )
+
+        print(
+            "Evidence recorder initialized."
+        )
+
+        print(
+            f"Evidence directory: "
+            f"{EVIDENCE_DIRECTORY}"
+        )
+
+        print(
+            f"Pre-event window: "
+            f"{PRE_EVENT_SECONDS}s"
+        )
+
+        print(
+            f"Post-event window: "
+            f"{POST_EVENT_SECONDS}s"
+        )
+
+        # ----------------------------------------------------
+        # Display loaded components
+        # ----------------------------------------------------
+
+        print("-" * 60)
+
+        print(
+            "Detector loaded."
+        )
+
+        print(
+            "Tracker loaded."
+        )
+
+        print(
+            f"Zones loaded: "
+            f"{len(zones)}"
+        )
+
+        for zone in zones:
+            print(
+                f"  - {zone['zone_id']}: "
+                f"{zone['name']}"
+            )
+
+        print(
+            "Intrusion rule loaded."
+        )
+
+        print(
+            "Camera health monitor loaded."
+        )
+
+        print(
+            "Camera health event service loaded."
+        )
+
+        print(
+            "Evidence recorder loaded."
+        )
+
+        print("-" * 60)
+
+        # ----------------------------------------------------
+        # Output video
+        # ----------------------------------------------------
+
+        Path(
+            OUTPUT_DIRECTORY
+        ).mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        output_path = str(
+            Path(OUTPUT_DIRECTORY)
+            / f"{camera_id}_intrusion_detection.mp4"
+        )
+
+        fourcc = cv2.VideoWriter_fourcc(
+            *"mp4v"
+        )
+
+        writer = cv2.VideoWriter(
+            output_path,
+            fourcc,
+            source_fps,
+            (width, height),
+        )
+
+        if not writer.isOpened():
+            raise RuntimeError(
+                f"Could not create output video: "
+                f"{output_path}"
+            )
+
+        print(
+            f"Output       : "
+            f"{output_path}"
+        )
+
+        print("-" * 60)
+
+        # ----------------------------------------------------
+        # Main processing loop
+        # ----------------------------------------------------
 
         print(
             "Processing..."
@@ -389,6 +505,32 @@ def main():
             # ------------------------------------------------
 
             if frame is None:
+
+                # ------------------------------------------------
+                # Finite file source:
+                #
+                # None means the recorded video reached EOF.
+                # This is normal completion and must NOT affect
+                # camera health.
+                # ------------------------------------------------
+
+                if finite_source:
+
+                    print(
+                        f"[END OF STREAM] "
+                        f"Camera={camera_id} "
+                        "Recorded video reached EOF."
+                    )
+
+                    break
+
+                # ------------------------------------------------
+                # Continuous RTSP source:
+                #
+                # None means the source could not provide a frame
+                # after its internal reconnect attempts.
+                # Treat this as an actual camera failure.
+                # ------------------------------------------------
 
                 transition = camera_health.frame_failed(
                     error=(
@@ -449,14 +591,11 @@ def main():
                     print(
                         f"[CAMERA FAILURE] "
                         f"Camera={camera_id} "
-                        f"Waiting for failure threshold..."
+                        "Waiting for failure threshold..."
                     )
 
-                # ------------------------------------------------
-                # End-of-stream / failed-source condition
-                # ------------------------------------------------
-
-                break
+                # RTSP failure: keep monitoring for recovery.
+                continue
 
             # ------------------------------------------------
             # Valid frame received
@@ -504,14 +643,14 @@ def main():
             )
 
             # ------------------------------------------------
-            # Run AI every sample_interval frames
+            # Frame sampling
             # ------------------------------------------------
 
-            if (
-                frame_index
-                % sample_interval
-                == 0
-            ):
+            process_with_ai = (
+                sampler.should_process()
+            )
+
+            if process_with_ai:
 
                 ai_frames += 1
 
@@ -618,7 +757,7 @@ def main():
                             x1,
                             max(
                                 30,
-                                y1 - 10
+                                y1 - 10,
                             ),
                         ),
                         cv2.FONT_HERSHEY_SIMPLEX,
@@ -760,32 +899,49 @@ def main():
             frame_index += 1
 
             # ------------------------------------------------
-            # Progress
+            # Progress for finite video
             # ------------------------------------------------
 
-            progress_interval = max(
-                1,
-                total_frames // 10,
-            )
-
             if (
-                frame_index
-                % progress_interval
-                == 0
+                finite_source
+                and total_frames > 0
             ):
 
-                progress = (
-                    frame_index
-                    / total_frames
-                    * 100
-                    if total_frames > 0
-                    else 0
+                progress_interval = max(
+                    1,
+                    total_frames // 10,
                 )
 
-                print(
-                    f"Progress: "
-                    f"{progress:.1f}%"
-                )
+                if (
+                    frame_index
+                    % progress_interval
+                    == 0
+                ):
+
+                    progress = (
+                        frame_index
+                        / total_frames
+                        * 100
+                    )
+
+                    print(
+                        f"Progress: "
+                        f"{progress:.1f}%"
+                    )
+
+            else:
+
+                if (
+                    frame_index % 100
+                    == 0
+                ):
+
+                    print(
+                        f"Frames processed: "
+                        f"{frame_index} | "
+                        f"AI frames: "
+                        f"{ai_frames}"
+                    )
 
     finally:
 
@@ -906,10 +1062,11 @@ def main():
         f"{total_events}"
     )
 
-    print(
-        f"Output       : "
-        f"{OUTPUT_PATH}"
-    )
+    if writer is not None:
+        print(
+            f"Output       : "
+            f"{output_path}"
+        )
 
     print(
         f"Evidence dir : "
