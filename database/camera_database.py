@@ -114,6 +114,20 @@ class CameraDatabase:
 
         return cursor.fetchone()
 
+    def ensure_camera(self, camera_id, name, location):
+        existing = self.get_camera(camera_id)
+        if existing is not None:
+            return existing
+
+        self.create_camera(
+            camera_id=camera_id,
+            name=name,
+            location=location,
+            status='OFFLINE',
+        )
+
+        return self.get_camera(camera_id)
+
     def get_all_cameras(self):
         cursor = self.connection.execute(
             """

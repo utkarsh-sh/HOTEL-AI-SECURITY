@@ -25,6 +25,7 @@ from rules.intrusion_rules import IntrusionRule
 from video.camera_config import load_camera_configs
 from video.frame_sampler import FrameSampler
 from video.source_factory import create_video_source
+from video.camera_manager import CameraManager
 
 
 # ============================================================
@@ -135,80 +136,65 @@ def is_finite_source(camera_config):
     )
 
 
+
 # ============================================================
-# Main
+# Per-camera processing
 # ============================================================
 
-def main():
+def process_camera(
+    camera_config,
+    camera_manager,
+    detector,
+    zones,
+    zone_detector,
+    event_database,
+    camera_database,
+    camera_health_events,
+):
+    """
+    Process one configured camera from the shared CameraManager.
 
-    print("=" * 60)
-    print("HOTEL AI CCTV - INTRUSION DETECTION")
-    print("=" * 60)
+    All stateful components are created per camera so tracker,
+    intrusion persistence, frame sampling, camera health, evidence,
+    and output video cannot leak state between cameras.
 
-    source = None
+    Returns:
+        dict containing camera-level processing metrics.
+    """
+
+    camera_id = camera_config.camera_id
+    source = camera_manager.get_source(camera_id)
+    finite_source = is_finite_source(camera_config)
+
     writer = None
-    camera_database = None
-    event_database = None
     evidence_recorder = None
 
-    total_events = 0
     frame_index = 0
     ai_frames = 0
+    total_events = 0
+    output_path = None
+    camera_error = None
+
+    # --------------------------------------------------------
+    # Per-camera stateful components
+    # --------------------------------------------------------
+
+    tracker = PersonTracker()
+
+    intrusion_rule = IntrusionRule(
+        persistence_frames=3
+    )
+
+    camera_health = CameraHealthMonitor(
+        camera_id=camera_id,
+        database=camera_database,
+        failure_threshold=CAMERA_FAILURE_THRESHOLD,
+    )
 
     try:
-
         # ----------------------------------------------------
-        # Load camera configuration
+        # Read source metadata
         # ----------------------------------------------------
-
-        camera_configs = load_camera_configs(
-            CAMERA_CONFIG_PATH
-        )
-
-        if not camera_configs:
-            raise RuntimeError(
-                "No cameras configured."
-            )
-
-        # Stage 15E currently runs one camera at a time.
-        camera_config = camera_configs[0]
-
-        camera_id = camera_config.camera_id
-
-        print(
-            f"Camera       : "
-            f"{camera_config.name}"
-        )
-
-        print(
-            f"Camera ID    : "
-            f"{camera_id}"
-        )
-
-        print(
-            f"Location     : "
-            f"{camera_config.location}"
-        )
-
-        print(
-            f"Source type  : "
-            f"{camera_config.source_type}"
-        )
-
-        print(
-            f"AI FPS       : "
-            f"{camera_config.ai_fps}"
-        )
-
-        # ----------------------------------------------------
-        # Create configured video source
-        # ----------------------------------------------------
-
-        source = create_video_source(
-            camera_config
-        )
-
-        source.open()
 
         (
             source_fps,
@@ -221,10 +207,6 @@ def main():
             source_fps
         )
 
-        finite_source = is_finite_source(
-            camera_config
-        )
-
         duration = (
             total_frames / source_fps
             if finite_source
@@ -232,34 +214,39 @@ def main():
             else 0
         )
 
-        print("-" * 60)
-
+        print("=" * 60)
         print(
-            f"Resolution   : "
-            f"{width} x {height}"
+            f"CAMERA START: {camera_config.name}"
         )
+        print("=" * 60)
 
         print(
-            f"Source FPS   : "
-            f"{source_fps:.2f}"
+            f"Camera ID    : {camera_id}"
+        )
+        print(
+            f"Location     : {camera_config.location}"
+        )
+        print(
+            f"Source type  : {camera_config.source_type}"
+        )
+        print(
+            f"Resolution   : {width} x {height}"
+        )
+        print(
+            f"Source FPS   : {source_fps:.2f}"
         )
 
         if finite_source:
             print(
-                f"Frames       : "
-                f"{total_frames}"
+                f"Frames       : {total_frames}"
             )
-
             print(
-                f"Duration     : "
-                f"{duration:.2f}s"
+                f"Duration     : {duration:.2f}s"
             )
-
         else:
             print(
                 "Frames       : continuous RTSP stream"
             )
-
             print(
                 "Duration     : continuous"
             )
@@ -278,54 +265,8 @@ def main():
             f"{sampler.target_fps:.2f}"
         )
 
-        print("-" * 60)
-
         # ----------------------------------------------------
-        # Load AI components
-        # ----------------------------------------------------
-
-        detector = PersonDetector()
-
-        tracker = PersonTracker()
-
-        zones = load_zones(
-            ZONE_PATH
-        )
-
-        zone_detector = ZoneDetector(
-            zones
-        )
-
-        intrusion_rule = IntrusionRule(
-            persistence_frames=3
-        )
-
-        # ----------------------------------------------------
-        # Initialize databases
-        # ----------------------------------------------------
-
-        event_database = EventDatabase(
-            "database/hotel_security.db"
-        )
-
-        camera_database = CameraDatabase(
-            "database/hotel_security.db"
-        )
-
-        camera_health_events = CameraHealthEventService(
-            event_database=event_database
-        )
-
-        print(
-            "Event database initialized."
-        )
-
-        print(
-            "Camera database initialized."
-        )
-
-        # ----------------------------------------------------
-        # Verify camera registration
+        # Camera registration / health state
         # ----------------------------------------------------
 
         camera = camera_database.get_camera(
@@ -341,16 +282,6 @@ def main():
             f"Camera registered: "
             f"{camera['name']} "
             f"({camera['location']})"
-        )
-
-        # ----------------------------------------------------
-        # Camera health monitor
-        # ----------------------------------------------------
-
-        camera_health = CameraHealthMonitor(
-            camera_id=camera_id,
-            database=camera_database,
-            failure_threshold=CAMERA_FAILURE_THRESHOLD,
         )
 
         print(
@@ -404,49 +335,6 @@ def main():
         )
 
         # ----------------------------------------------------
-        # Display loaded components
-        # ----------------------------------------------------
-
-        print("-" * 60)
-
-        print(
-            "Detector loaded."
-        )
-
-        print(
-            "Tracker loaded."
-        )
-
-        print(
-            f"Zones loaded: "
-            f"{len(zones)}"
-        )
-
-        for zone in zones:
-            print(
-                f"  - {zone['zone_id']}: "
-                f"{zone['name']}"
-            )
-
-        print(
-            "Intrusion rule loaded."
-        )
-
-        print(
-            "Camera health monitor loaded."
-        )
-
-        print(
-            "Camera health event service loaded."
-        )
-
-        print(
-            "Evidence recorder loaded."
-        )
-
-        print("-" * 60)
-
-        # ----------------------------------------------------
         # Output video
         # ----------------------------------------------------
 
@@ -485,16 +373,14 @@ def main():
         )
 
         print("-" * 60)
+        print(
+            "Processing..."
+        )
+        print("-" * 60)
 
         # ----------------------------------------------------
         # Main processing loop
         # ----------------------------------------------------
-
-        print(
-            "Processing..."
-        )
-
-        print("-" * 60)
 
         while True:
 
@@ -839,6 +725,7 @@ def main():
 
                     print(
                         f"[INTRUSION EVENT] "
+                        f"Camera={camera_id} "
                         f"Frame={frame_index} "
                         f"EventID={event_id} "
                         f"Track={event['track_id']} "
@@ -851,6 +738,7 @@ def main():
 
                         print(
                             f"[EVIDENCE STARTED] "
+                            f"Camera={camera_id} "
                             f"EventID={event_id} "
                             f"Path={evidence_path}"
                         )
@@ -859,6 +747,7 @@ def main():
 
                         print(
                             f"[EVIDENCE WARNING] "
+                            f"Camera={camera_id} "
                             f"EventID={event_id} "
                             f"Evidence capture "
                             f"could not be started."
@@ -938,10 +827,20 @@ def main():
 
                     print(
                         f"Frames processed: "
+                        f"Camera={camera_id} "
                         f"{frame_index} | "
                         f"AI frames: "
                         f"{ai_frames}"
                     )
+
+    except Exception as error:
+        camera_error = str(error)
+
+        print(
+            f"[CAMERA ERROR] "
+            f"Camera={camera_id} "
+            f"{error}"
+        )
 
     finally:
 
@@ -959,6 +858,7 @@ def main():
 
                 print(
                     f"[CLEANUP WARNING] "
+                    f"Camera={camera_id} "
                     f"Evidence finalization failed: "
                     f"{error}"
                 )
@@ -977,24 +877,294 @@ def main():
 
                 print(
                     f"[CLEANUP WARNING] "
+                    f"Camera={camera_id} "
                     f"Video writer release failed: "
                     f"{error}"
                 )
 
+    print("-" * 60)
+
+    if camera_error is None:
+        print(
+            f"CAMERA COMPLETE: {camera_id}"
+        )
+    else:
+        print(
+            f"CAMERA FAILED: {camera_id}"
+        )
+
+    print(
+        f"Total frames : {frame_index}"
+    )
+
+    print(
+        f"AI frames    : {ai_frames}"
+    )
+
+    print(
+        f"Events       : {total_events}"
+    )
+
+    if output_path is not None:
+        print(
+            f"Output       : {output_path}"
+        )
+
+    print("-" * 60)
+
+    return {
+        "camera_id": camera_id,
+        "name": camera_config.name,
+        "frames": frame_index,
+        "ai_frames": ai_frames,
+        "events": total_events,
+        "output_path": output_path,
+        "error": camera_error,
+    }
+
+
+# ============================================================
+# Main fleet orchestration
+# ============================================================
+
+def main():
+
+    print("=" * 60)
+    print("HOTEL AI CCTV - MULTI-CAMERA INTRUSION DETECTION")
+    print("=" * 60)
+
+    camera_manager = None
+    camera_database = None
+    event_database = None
+
+    results = []
+
+    try:
+
         # ----------------------------------------------------
-        # Release source
+        # Load camera configuration
         # ----------------------------------------------------
 
-        if source is not None:
+        camera_configs = load_camera_configs(
+            CAMERA_CONFIG_PATH
+        )
 
-            try:
+        if not camera_configs:
+            raise RuntimeError(
+                "No cameras configured."
+            )
 
-                source.release()
+        print(
+            f"Configured cameras: "
+            f"{len(camera_configs)}"
+        )
 
-            except Exception as error:
+        # ----------------------------------------------------
+        # Camera manager
+        # ----------------------------------------------------
+
+        camera_manager = CameraManager(
+            camera_configs
+        )
+
+        print(
+            f"Camera manager initialized: "
+            f"{len(camera_manager)} cameras"
+        )
+
+        # ----------------------------------------------------
+        # Shared stateless AI components
+        # ----------------------------------------------------
+
+        detector = PersonDetector()
+
+        zones = load_zones(
+            ZONE_PATH
+        )
+
+        zone_detector = ZoneDetector(
+            zones
+        )
+
+        print(
+            "Shared detector loaded."
+        )
+
+        print(
+            "Shared zone detector loaded."
+        )
+
+        print(
+            f"Zones loaded: {len(zones)}"
+        )
+
+        for zone in zones:
+            print(
+                f"  - {zone['zone_id']}: "
+                f"{zone['name']}"
+            )
+
+        # ----------------------------------------------------
+        # Shared databases
+        # ----------------------------------------------------
+
+        event_database = EventDatabase(
+            "database/hotel_security.db"
+        )
+
+        camera_database = CameraDatabase(
+            "database/hotel_security.db"
+        )
+
+        camera_health_events = CameraHealthEventService(
+            event_database=event_database
+        )
+
+        print(
+            "Event database initialized."
+        )
+
+        print(
+            "Camera database initialized."
+        )
+
+        print(
+            "Camera health event service loaded."
+        )
+
+        # ----------------------------------------------------
+        # ----------------------------------------------------
+        # Reconcile configured cameras with the camera database.
+        #
+        # Existing cameras keep their persisted health state.
+        # Newly configured cameras are registered OFFLINE and
+        # become ONLINE only after a valid frame is received.
+        # ----------------------------------------------------
+
+        for camera_config in camera_configs:
+
+            camera = camera_database.ensure_camera(
+                camera_id=camera_config.camera_id,
+                name=camera_config.name,
+                location=camera_config.location,
+            )
+
+            camera_name = camera['name']
+            camera_location = camera['location']
+            camera_status = camera['status']
+
+            print(
+                f'Camera registered: '
+                f'{camera_name} '
+                f'({camera_location}) '
+                f'Status={camera_status}'
+            )
+
+        # Open all configured sources.
+        #
+        # CameraManager isolates open failures so one bad
+        # camera does not prevent the rest of the fleet from
+        # being attempted.
+        # ----------------------------------------------------
+
+        opened = camera_manager.open_all()
+
+        print(
+            f"Camera sources opened: "
+            f"{len(opened)}/{len(camera_configs)}"
+        )
+
+        if camera_manager.open_errors:
+
+            for camera_id, error in (
+                camera_manager.open_errors.items()
+            ):
+                print(
+                    f"[CAMERA OPEN ERROR] "
+                    f"Camera={camera_id} "
+                    f"Error={error}"
+                )
+
+        # ----------------------------------------------------
+        # Process each camera sequentially.
+        #
+        # This stage intentionally does NOT introduce
+        # concurrency yet. Stage 16D will address concurrent
+        # live-camera processing after this lifecycle is proven.
+        # ----------------------------------------------------
+
+        for camera_config in camera_configs:
+
+            camera_id = camera_config.camera_id
+
+            if camera_id not in opened:
+
+                results.append(
+                    {
+                        "camera_id": camera_id,
+                        "name": camera_config.name,
+                        "frames": 0,
+                        "ai_frames": 0,
+                        "events": 0,
+                        "output_path": None,
+                        "error": (
+                            camera_manager
+                            .open_errors
+                            .get(
+                                camera_id,
+                                "Camera source failed to open.",
+                            )
+                        ),
+                    }
+                )
 
                 print(
+                    f"[CAMERA SKIPPED] "
+                    f"Camera={camera_id} "
+                    "Source was not opened."
+                )
+
+                continue
+
+            result = process_camera(
+                camera_config=camera_config,
+                camera_manager=camera_manager,
+                detector=detector,
+                zones=zones,
+                zone_detector=zone_detector,
+                event_database=event_database,
+                camera_database=camera_database,
+                camera_health_events=camera_health_events,
+            )
+
+            results.append(result)
+
+    except Exception as error:
+
+        print(
+            f"[FLEET ERROR] {error}"
+        )
+
+        raise
+
+    finally:
+
+        # ----------------------------------------------------
+        # Release all managed camera sources
+        # ----------------------------------------------------
+
+        if camera_manager is not None:
+
+            release_errors = (
+                camera_manager.release_all()
+            )
+
+            for camera_id, error in (
+                release_errors.items()
+            ):
+                print(
                     f"[CLEANUP WARNING] "
+                    f"Camera={camera_id} "
                     f"Video source release failed: "
                     f"{error}"
                 )
@@ -1036,42 +1206,95 @@ def main():
                 )
 
     # --------------------------------------------------------
-    # Final summary
+    # Fleet summary
     # --------------------------------------------------------
 
-    print("=" * 60)
+    total_frames = sum(
+        result["frames"]
+        for result in results
+    )
 
-    print(
-        "INTRUSION DETECTION COMPLETE"
+    total_ai_frames = sum(
+        result["ai_frames"]
+        for result in results
+    )
+
+    total_events = sum(
+        result["events"]
+        for result in results
+    )
+
+    successful_cameras = sum(
+        1
+        for result in results
+        if result["error"] is None
+    )
+
+    failed_cameras = (
+        len(results) - successful_cameras
     )
 
     print("=" * 60)
+    print("MULTI-CAMERA INTRUSION DETECTION COMPLETE")
+    print("=" * 60)
 
     print(
-        f"Total frames : "
-        f"{frame_index}"
+        f"Cameras processed : {len(results)}"
     )
 
     print(
-        f"AI frames    : "
-        f"{ai_frames}"
+        f"Cameras successful : {successful_cameras}"
     )
 
     print(
-        f"Events       : "
-        f"{total_events}"
+        f"Cameras failed     : {failed_cameras}"
     )
 
-    if writer is not None:
-        print(
-            f"Output       : "
-            f"{output_path}"
+    print(
+        f"Total frames       : {total_frames}"
+    )
+
+    print(
+        f"AI frames          : {total_ai_frames}"
+    )
+
+    print(
+        f"Total events       : {total_events}"
+    )
+
+    print(
+        f"Evidence dir       : {EVIDENCE_DIRECTORY}"
+    )
+
+    print("-" * 60)
+
+    for result in results:
+
+        status = (
+            "SUCCESS"
+            if result["error"] is None
+            else "FAILED"
         )
 
-    print(
-        f"Evidence dir : "
-        f"{EVIDENCE_DIRECTORY}"
-    )
+        print(
+            f"{result['camera_id']} | "
+            f"{status} | "
+            f"Frames={result['frames']} | "
+            f"AI={result['ai_frames']} | "
+            f"Events={result['events']}"
+        )
+
+        if result["output_path"] is not None:
+            print(
+                f"  Output: "
+                f"{result['output_path']}"
+            )
+
+        if result["error"] is not None:
+            print(
+                f"  Error: "
+                f"{result['error']}"
+            )
 
     print("=" * 60)
 
