@@ -26,6 +26,7 @@ from video.camera_config import load_camera_configs
 from video.frame_sampler import FrameSampler
 from video.source_factory import create_video_source
 from video.camera_manager import CameraManager
+from video.camera_worker_pool import CameraWorkerPool
 
 
 # ============================================================
@@ -924,6 +925,59 @@ def process_camera(
 
 
 # ============================================================
+# Concurrent camera worker
+# ============================================================
+
+def process_camera_worker(
+    camera_config,
+    camera_manager,
+    detector,
+    zones,
+    zone_detector,
+):
+    """
+    Process one camera inside a worker thread.
+
+    SQLite connections are created inside the worker so they
+    are never shared across worker threads.
+    """
+
+    event_database = None
+    camera_database = None
+
+    try:
+        event_database = EventDatabase(
+            "database/hotel_security.db"
+        )
+
+        camera_database = CameraDatabase(
+            "database/hotel_security.db"
+        )
+
+        camera_health_events = CameraHealthEventService(
+            event_database=event_database
+        )
+
+        return process_camera(
+            camera_config=camera_config,
+            camera_manager=camera_manager,
+            detector=detector,
+            zones=zones,
+            zone_detector=zone_detector,
+            event_database=event_database,
+            camera_database=camera_database,
+            camera_health_events=camera_health_events,
+        )
+
+    finally:
+        if event_database is not None:
+            event_database.close()
+
+        if camera_database is not None:
+            camera_database.close()
+
+
+# ============================================================
 # Main fleet orchestration
 # ============================================================
 
@@ -1086,18 +1140,35 @@ def main():
                 )
 
         # ----------------------------------------------------
-        # Process each camera sequentially.
+        # ----------------------------------------------------
+        # Concurrent camera processing.
         #
-        # This stage intentionally does NOT introduce
-        # concurrency yet. Stage 16D will address concurrent
-        # live-camera processing after this lifecycle is proven.
+        # Only successfully opened cameras enter the worker pool.
+        # Concurrency is deliberately bounded to two workers because
+        # the development GPU has 4 GB VRAM.
         # ----------------------------------------------------
 
+        opened_configs = [
+            camera_config
+            for camera_config in camera_configs
+            if camera_config.camera_id in opened
+        ]
+
+        # Preserve explicit results for cameras that failed to open.
         for camera_config in camera_configs:
 
             camera_id = camera_config.camera_id
 
             if camera_id not in opened:
+
+                error_message = (
+                    camera_manager
+                    .open_errors
+                    .get(
+                        camera_id,
+                        "Camera source failed to open.",
+                    )
+                )
 
                 results.append(
                     {
@@ -1107,37 +1178,90 @@ def main():
                         "ai_frames": 0,
                         "events": 0,
                         "output_path": None,
-                        "error": (
-                            camera_manager
-                            .open_errors
-                            .get(
-                                camera_id,
-                                "Camera source failed to open.",
-                            )
-                        ),
+                        "error": error_message,
                     }
                 )
 
                 print(
                     f"[CAMERA SKIPPED] "
                     f"Camera={camera_id} "
-                    "Source was not opened."
+                    f"Source was not opened."
                 )
 
-                continue
+        if opened_configs:
 
-            result = process_camera(
-                camera_config=camera_config,
-                camera_manager=camera_manager,
-                detector=detector,
-                zones=zones,
-                zone_detector=zone_detector,
-                event_database=event_database,
-                camera_database=camera_database,
-                camera_health_events=camera_health_events,
+            camera_configs_by_id = {
+                camera_config.camera_id: camera_config
+                for camera_config in opened_configs
+            }
+
+            worker_pool = CameraWorkerPool(
+                max_workers=2
             )
 
-            results.append(result)
+            print(
+                f"Starting concurrent camera workers: "
+                f"{len(opened_configs)} cameras, "
+                f"max_workers={worker_pool.max_workers}"
+            )
+
+            def camera_worker(camera_id):
+
+                return process_camera_worker(
+                    camera_config=camera_configs_by_id[
+                        camera_id
+                    ],
+                    camera_manager=camera_manager,
+                    detector=detector,
+                    zones=zones,
+                    zone_detector=zone_detector,
+                )
+
+            worker_results = worker_pool.run(
+                camera_ids=[
+                    camera_config.camera_id
+                    for camera_config in opened_configs
+                ],
+                worker=camera_worker,
+            )
+
+            for worker_result in worker_results:
+
+                if worker_result.success:
+
+                    results.append(
+                        worker_result.value
+                    )
+
+                    print(
+                        f"[CAMERA WORKER COMPLETE] "
+                        f"Camera={worker_result.camera_id}"
+                    )
+
+                else:
+
+                    results.append(
+                        {
+                            "camera_id": worker_result.camera_id,
+                            "name": (
+                                camera_configs_by_id[
+                                    worker_result.camera_id
+                                ].name
+                            ),
+                            "frames": 0,
+                            "ai_frames": 0,
+                            "events": 0,
+                            "output_path": None,
+                            "error": worker_result.error,
+                        }
+                    )
+
+                    print(
+                        f"[CAMERA WORKER FAILED] "
+                        f"Camera={worker_result.camera_id} "
+                        f"Error={worker_result.error}"
+                    )
+
 
     except Exception as error:
 
