@@ -19,6 +19,10 @@ from ai.evidence_recorder import EvidenceRecorder
 
 from database.event_database import EventDatabase
 from database.camera_database import CameraDatabase
+from database.notification_database import NotificationDatabase
+
+from notifications.providers import ConsoleNotificationProvider
+from notifications.service import NotificationService
 
 from rules.intrusion_rules import IntrusionRule
 
@@ -151,6 +155,7 @@ def process_camera(
     event_database,
     camera_database,
     camera_health_events,
+    notification_service,
 ):
     """
     Process one configured camera from the shared CameraManager.
@@ -721,6 +726,50 @@ def process_camera(
                         )
 
                     # ----------------------------------------
+                    # Send security notification
+                    # ----------------------------------------
+                    #
+                    # Notification failure must never stop
+                    # the CCTV processing worker.
+                    # ----------------------------------------
+
+                    try:
+
+                        notification_results = (
+                            notification_service.notify_event(
+                                event_id=event_id,
+                                severity=event["severity"],
+                                recipient=None,
+                                subject=(
+                                    f"Hotel Security Alert - "
+                                    f"{event['event_type']}"
+                                ),
+                                message=(
+                                    f"Camera {camera_id}: "
+                                    f"{event['message']}"
+                                ),
+                            )
+                        )
+
+                        for notification_result in (
+                            notification_results
+                        ):
+                            print(
+                                f"[NOTIFICATION] "
+                                f"EventID={event_id} "
+                                f"Channel={notification_result['provider']} "
+                                f"Success={notification_result['success']}"
+                            )
+
+                    except Exception as notification_error:
+
+                        print(
+                            f"[NOTIFICATION ERROR] "
+                            f"EventID={event_id} "
+                            f"Error={notification_error}"
+                        )
+
+                    # ----------------------------------------
                     # Log event
                     # ----------------------------------------
 
@@ -944,6 +993,7 @@ def process_camera_worker(
 
     event_database = None
     camera_database = None
+    notification_database = None
 
     try:
         event_database = EventDatabase(
@@ -952,6 +1002,17 @@ def process_camera_worker(
 
         camera_database = CameraDatabase(
             "database/hotel_security.db"
+        )
+
+        notification_database = NotificationDatabase(
+            "database/hotel_security.db"
+        )
+
+        notification_service = NotificationService(
+            database=notification_database,
+            providers={
+                "CONSOLE": ConsoleNotificationProvider(),
+            },
         )
 
         camera_health_events = CameraHealthEventService(
@@ -967,6 +1028,7 @@ def process_camera_worker(
             event_database=event_database,
             camera_database=camera_database,
             camera_health_events=camera_health_events,
+            notification_service=notification_service,
         )
 
     finally:
@@ -975,6 +1037,9 @@ def process_camera_worker(
 
         if camera_database is not None:
             camera_database.close()
+
+        if notification_database is not None:
+            notification_database.close()
 
 
 # ============================================================
