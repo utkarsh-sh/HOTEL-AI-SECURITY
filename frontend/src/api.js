@@ -332,3 +332,16 @@ export async function getEventEvidence(
 
   return response.blob();
 }
+
+
+// =========================
+// NOTIFICATION HISTORY
+// =========================
+
+export async function getEventNotifications(
+  eventId
+) {
+  return request(
+    `/notifications/event/${eventId}`
+  );
+}

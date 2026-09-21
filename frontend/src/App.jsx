@@ -16,6 +16,7 @@ import {
   getCameraHealthSummary,
   getCameraHealth,
   getEventEvidence,
+  getEventNotifications,
 } from "./api";
 
 function App() {
@@ -37,6 +38,11 @@ const [selectedCamera, setSelectedCamera] = useState(null);
   const [actionLoading, setActionLoading] = useState(null);
   const [auditLogs, setAuditLogs] = useState([]);
   const [auditLoading, setAuditLoading] = useState(false);
+
+    // Notification delivery state
+  const [notifications, setNotifications] = useState([]);
+  const [notificationLoading, setNotificationLoading] = useState(false);
+  const [notificationError, setNotificationError] = useState(null);
 
   // =========================
   // AUTHENTICATION
@@ -102,6 +108,33 @@ const [selectedCamera, setSelectedCamera] = useState(null);
       setAuditLogs([]);
     } finally {
       setAuditLoading(false);
+    }
+  }, []);
+
+  // =========================
+  // NOTIFICATION HISTORY
+  // =========================
+
+  const loadEventNotifications = useCallback(async (eventId) => {
+    setNotificationLoading(true);
+    setNotificationError(null);
+
+    try {
+      const result = await getEventNotifications(eventId);
+
+      setNotifications(
+        result.notifications || []
+      );
+    } catch (error) {
+      console.error(
+        "Failed to load notification history:",
+        error
+      );
+
+      setNotifications([]);
+      setNotificationError(error.message);
+    } finally {
+      setNotificationLoading(false);
     }
   }, []);
 
@@ -191,41 +224,38 @@ const [selectedCamera, setSelectedCamera] = useState(null);
     setSelectedCamera(null);
   };
 
-  async function loadDashboardData() {
+    const loadDashboardData = useCallback(async () => {
     try {
       setError(null);
 
-    const [
-      cameraData,
-      eventData,
-      healthData,
-      cameraHealthSummaryData,
-    ] = await Promise.all([
-      getCameras(),
-      getEvents(),
-      getHealth(),
-      getCameraHealthSummary(),
-    ]);
+      const [
+        cameraData,
+        eventData,
+        healthData,
+        cameraHealthSummaryData,
+      ] = await Promise.all([
+        getCameras(),
+        getEvents(),
+        getHealth(),
+        getCameraHealthSummary(),
+      ]);
 
-    setCameras(cameraData.cameras || []);
-    setEvents(eventData.events || []);
-    setSystemHealth(healthData);
-    setCameraHealthSummary(cameraHealthSummaryData);
-  } catch (err) {
-    console.error("Dashboard API error:", err);
-    setError(err.message);
-  } finally {
-    setLoading(false);
-  }
-}
-
-  useEffect(() => {
-    if (!authUser) {
+      setCameras(cameraData.cameras || []);
+      setEvents(eventData.events || []);
+      setSystemHealth(healthData);
+      setCameraHealthSummary(cameraHealthSummaryData);
+    } catch (err) {
+      console.error("Dashboard API error:", err);
+      setError(err.message);
+    } finally {
       setLoading(false);
+    }
+  }, []);
+
+    useEffect(() => {
+    if (!authUser) {
       return;
     }
-
-    loadDashboardData();
 
     const interval = setInterval(
       loadDashboardData,
@@ -233,7 +263,7 @@ const [selectedCamera, setSelectedCamera] = useState(null);
     );
 
     return () => clearInterval(interval);
-  }, [authUser]);
+  }, [authUser, loadDashboardData]);
 
   // =========================
   // DASHBOARD CALCULATIONS
@@ -366,6 +396,8 @@ const [selectedCamera, setSelectedCamera] = useState(null);
     setEvidenceError(null);
     setEvidenceLoading(false);
     loadEventAuditLogs(event.id);
+
+      loadEventNotifications(event.id);
   };
 
   const closeEvent = () => {
@@ -374,7 +406,11 @@ const [selectedCamera, setSelectedCamera] = useState(null);
     setEvidenceError(null);
     setEvidenceLoading(false);
     setAuditLogs([]);
-  };
+
+      setNotifications([]);
+      setNotificationLoading(false);
+      setNotificationError(null);
+    };
 
   // =========================
   // EVENT ACTIONS
@@ -449,6 +485,8 @@ const [selectedCamera, setSelectedCamera] = useState(null);
       setSelectedEvent(updatedEvent);
 
       await loadEventAuditLogs(eventId);
+
+        await loadEventNotifications(eventId);
     } catch (err) {
       console.error(
         "Operator action failed:",
@@ -1880,6 +1918,121 @@ const [selectedCamera, setSelectedCamera] = useState(null);
                   <strong>
                     {selectedEvent.resolution}
                   </strong>
+
+                </div>
+
+              )}
+
+            </div>
+
+            {/* =========================
+                NOTIFICATION DELIVERY
+            ========================= */}
+
+            <div className="audit-history">
+
+              <div className="audit-history-header">
+
+                <span className="audit-history-label">
+                  NOTIFICATION DELIVERY
+                </span>
+
+                <span className="audit-history-count">
+                  {notifications.length}{" "}
+                  {notifications.length === 1
+                    ? "notification"
+                    : "notifications"}
+                </span>
+
+              </div>
+
+              {notificationLoading ? (
+
+                <div className="audit-history-empty">
+                  Loading notification history...
+                </div>
+
+              ) : notificationError ? (
+
+                <div className="audit-history-empty">
+                  Unable to load notification history:{" "}
+                  {notificationError}
+                </div>
+
+              ) : notifications.length === 0 ? (
+
+                <div className="audit-history-empty">
+                  No notification delivery records.
+                </div>
+
+              ) : (
+
+                <div className="audit-history-list">
+
+                  {notifications.map((notification) => (
+
+                    <div
+                      className="audit-history-item"
+                      key={notification.id}
+                    >
+
+                      <div className="audit-history-action">
+                        {notification.channel || "UNKNOWN CHANNEL"}
+                        {" • "}
+                        {notification.status || "UNKNOWN"}
+                      </div>
+
+                      <div className="audit-history-details">
+                        <span>
+                          Provider:{" "}
+                          {notification.provider || "Not specified"}
+                        </span>
+                        <span>
+                          Severity:{" "}
+                          {notification.severity || "Not specified"}
+                        </span>
+                      </div>
+
+                      <div className="audit-history-details">
+                        <span>
+                          Recipient:{" "}
+                          {notification.recipient || "Not specified"}
+                        </span>
+                        <span>
+                          Retries:{" "}
+                          {notification.retry_count ?? 0}
+                        </span>
+                      </div>
+
+                      <div className="audit-history-details">
+                        <span>
+                          Created:{" "}
+                          {notification.created_at
+                            ? new Date(
+                                notification.created_at
+                              ).toLocaleString()
+                            : "Not available"}
+                        </span>
+                        <span>
+                          Sent:{" "}
+                          {notification.sent_at
+                            ? new Date(
+                                notification.sent_at
+                              ).toLocaleString()
+                            : "Not sent"}
+                        </span>
+                      </div>
+
+                      {notification.error_message && (
+                        <div className="audit-history-description">
+                          Delivery error:{" "}
+                          {notification.error_message}
+                        </div>
+                      )}
+
+                    </div>
+
+                  ))}
 
                 </div>
 
