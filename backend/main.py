@@ -1,3 +1,4 @@
+from backend.notification_routes import router as notification_router
 from pathlib import Path
 from typing import Optional
 
@@ -661,3 +662,5 @@ def get_audit_logs(
 
     finally:
         database.close()
+
+app.include_router(notification_router)
