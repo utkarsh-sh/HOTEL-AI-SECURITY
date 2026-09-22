@@ -461,6 +461,48 @@ def process_camera(
 
                     total_events += 1
 
+                    # --------------------------------------------
+                    # Notify security operator about camera outage
+                    # --------------------------------------------
+
+                    try:
+
+                        notification_results = (
+                            notification_service.notify_event(
+                                event_id=offline_event_id,
+                                severity="HIGH",
+                                recipient=None,
+                                subject=(
+                                    "Hotel Camera Offline - "
+                                    f"{camera_id}"
+                                ),
+                                message=(
+                                    f"Camera {camera_id} is offline. "
+                                    f"The camera exceeded the configured "
+                                    f"failure threshold of "
+                                    f"{camera_health.failure_threshold} "
+                                    f"consecutive failures."
+                                ),
+                            )
+                        )
+
+                        print(
+                            f"[CAMERA OFFLINE NOTIFICATION] "
+                            f"Camera={camera_id} "
+                            f"Results={notification_results}"
+                        )
+
+                    except Exception as notification_error:
+
+                        # Notification failure must never stop
+                        # CCTV processing.
+                        print(
+                            f"[NOTIFICATION WARNING] "
+                            f"Camera={camera_id} "
+                            f"Camera offline notification failed: "
+                            f"{notification_error}"
+                        )
+
                     print(
                         f"[CAMERA OFFLINE] "
                         f"Camera={camera_id} "

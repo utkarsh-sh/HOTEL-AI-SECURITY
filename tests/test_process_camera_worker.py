@@ -15,6 +15,18 @@ def test_process_camera_worker_creates_worker_databases(monkeypatch):
         def __init__(self, event_database):
             calls.append(("health_service_created", event_database))
 
+    class FakeNotificationService:
+        def __init__(self, database, providers):
+            calls.append(
+                (
+                    "notification_service_created",
+                    {
+                        "database": database,
+                        "providers": providers,
+                    },
+                )
+            )
+
     def fake_process_camera(**kwargs):
         calls.append(("process_camera", kwargs))
         return {
@@ -32,6 +44,18 @@ def test_process_camera_worker_creates_worker_databases(monkeypatch):
         runner,
         "CameraDatabase",
         FakeDatabase,
+    )
+
+    monkeypatch.setattr(
+        runner,
+        "NotificationDatabase",
+        FakeDatabase,
+    )
+
+    monkeypatch.setattr(
+        runner,
+        "NotificationService",
+        FakeNotificationService,
     )
 
     monkeypatch.setattr(
@@ -72,8 +96,8 @@ def test_process_camera_worker_creates_worker_databases(monkeypatch):
         if item[0] == "database_closed"
     ]
 
-    assert len(created) == 2
-    assert len(closed) == 2
+    assert len(created) == 3
+    assert len(closed) == 3
 
     process_calls = [
         item for item in calls
@@ -91,6 +115,21 @@ def test_process_camera_worker_creates_worker_databases(monkeypatch):
     assert kwargs["event_database"] is not None
     assert kwargs["camera_database"] is not None
     assert kwargs["camera_health_events"] is not None
+    assert kwargs["notification_service"] is not None
+
+    notification_service_calls = [
+        item for item in calls
+        if item[0] == "notification_service_created"
+    ]
+
+    assert len(notification_service_calls) == 1
+
+    notification_service_config = (
+        notification_service_calls[0][1]
+    )
+
+    assert notification_service_config["database"] is not None
+    assert "CONSOLE" in notification_service_config["providers"]
 
 
 def test_process_camera_worker_closes_databases_on_failure(monkeypatch):
@@ -107,6 +146,10 @@ def test_process_camera_worker_closes_databases_on_failure(monkeypatch):
         def __init__(self, event_database):
             pass
 
+    class FakeNotificationService:
+        def __init__(self, database, providers):
+            pass
+
     def failing_process_camera(**kwargs):
         raise RuntimeError("simulated processing failure")
 
@@ -120,6 +163,18 @@ def test_process_camera_worker_closes_databases_on_failure(monkeypatch):
         runner,
         "CameraDatabase",
         FakeDatabase,
+    )
+
+    monkeypatch.setattr(
+        runner,
+        "NotificationDatabase",
+        FakeDatabase,
+    )
+
+    monkeypatch.setattr(
+        runner,
+        "NotificationService",
+        FakeNotificationService,
     )
 
     monkeypatch.setattr(
@@ -155,4 +210,4 @@ def test_process_camera_worker_closes_databases_on_failure(monkeypatch):
             "Expected RuntimeError was not raised."
         )
 
-    assert len(closed) == 2
+    assert len(closed) == 3
