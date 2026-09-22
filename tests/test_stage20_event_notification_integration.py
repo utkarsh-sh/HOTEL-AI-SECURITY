@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 
 import pytest
 
@@ -251,7 +251,7 @@ def test_notification_failure_is_recorded(
 
     assert notification["event_id"] == event_id
     assert notification["status"] == "FAILED"
-    assert notification["retry_count"] == 1
+    assert notification["retry_count"] == 3
     assert (
         notification["error_message"]
         == "Simulated notification failure"

@@ -31,6 +31,65 @@ class FailingNotificationProvider(NotificationProvider):
         )
 
 
+class RetryThenSuccessProvider(NotificationProvider):
+
+    def __init__(self):
+        self.calls = 0
+
+    @property
+    def provider_name(self) -> str:
+        return "RETRY_SUCCESS_TEST"
+
+    def send(
+        self,
+        notification: NotificationMessage,
+    ) -> NotificationResult:
+
+        self.calls += 1
+
+        if self.calls < 3:
+
+            return NotificationResult(
+                success=False,
+                provider=self.provider_name,
+                error_message=(
+                    f"Simulated failure #{self.calls}"
+                ),
+            )
+
+        return NotificationResult(
+            success=True,
+            provider=self.provider_name,
+        )
+
+
+class AlwaysFailingNotificationProvider(
+    NotificationProvider
+):
+
+    def __init__(self):
+        self.calls = 0
+
+    @property
+    def provider_name(self) -> str:
+        return "ALWAYS_FAIL_TEST"
+
+    def send(
+        self,
+        notification: NotificationMessage,
+    ) -> NotificationResult:
+
+        self.calls += 1
+
+        return NotificationResult(
+            success=False,
+            provider=self.provider_name,
+            error_message=(
+                f"Simulated failure #{self.calls}"
+            ),
+        )
+
+
 @pytest.fixture
 def test_database(tmp_path):
 
@@ -146,6 +205,7 @@ def test_high_severity_event_is_sent(
     assert len(results) == 1
     assert results[0]["success"] is True
     assert results[0]["provider"] == "CONSOLE"
+    assert results[0]["attempts"] == 1
 
     notification = test_database.get_notification(
         results[0]["notification_id"]
@@ -228,7 +288,7 @@ def test_non_alert_severity_creates_no_notification(
     )
 
 
-def test_provider_failure_is_recorded(
+def test_provider_failure_is_recorded_without_retry(
     test_database,
 ):
 
@@ -238,6 +298,7 @@ def test_provider_failure_is_recorded(
             "FAILING":
                 FailingNotificationProvider(),
         },
+        max_retries=0,
     )
 
     result = service.send_notification(
@@ -251,6 +312,7 @@ def test_provider_failure_is_recorded(
 
     assert result["success"] is False
     assert result["provider"] == "FAILING_TEST"
+    assert result["attempts"] == 1
     assert (
         result["error_message"]
         == "Simulated provider failure"
@@ -266,6 +328,96 @@ def test_provider_failure_is_recorded(
     assert (
         notification["error_message"]
         == "Simulated provider failure"
+    )
+    assert notification["sent_at"] is None
+
+
+def test_provider_failure_is_retried_until_success(
+    test_database,
+):
+
+    provider = RetryThenSuccessProvider()
+
+    service = NotificationService(
+        database=test_database,
+        providers={
+            "RETRY":
+                provider,
+        },
+        max_retries=2,
+    )
+
+    result = service.send_notification(
+        event_id=1,
+        severity="HIGH",
+        channel="RETRY",
+        recipient="security-operator",
+        subject="Retry Test",
+        message="This should succeed on the third attempt.",
+    )
+
+    assert result["success"] is True
+    assert result["provider"] == "RETRY_SUCCESS_TEST"
+    assert result["attempts"] == 3
+    assert result["error_message"] is None
+
+    assert provider.calls == 3
+
+    notification = test_database.get_notification(
+        result["notification_id"]
+    )
+
+    assert notification is not None
+    assert notification["status"] == "SENT"
+    assert notification["retry_count"] == 2
+    assert notification["sent_at"] is not None
+    assert notification["error_message"] is None
+
+
+def test_provider_failure_stops_after_retry_limit(
+    test_database,
+):
+
+    provider = AlwaysFailingNotificationProvider()
+
+    service = NotificationService(
+        database=test_database,
+        providers={
+            "ALWAYS_FAIL":
+                provider,
+        },
+        max_retries=2,
+    )
+
+    result = service.send_notification(
+        event_id=1,
+        severity="HIGH",
+        channel="ALWAYS_FAIL",
+        recipient="security-operator",
+        subject="Retry Limit Test",
+        message="This should fail after three attempts.",
+    )
+
+    assert result["success"] is False
+    assert result["provider"] == "ALWAYS_FAIL_TEST"
+    assert result["attempts"] == 3
+    assert (
+        result["error_message"]
+        == "Simulated failure #3"
+    )
+
+    assert provider.calls == 3
+
+    notification = test_database.get_notification(
+        result["notification_id"]
+    )
+
+    assert notification is not None
+    assert notification["status"] == "FAILED"
+    assert notification["retry_count"] == 3
+    assert (
+        notification["error_message"]
+        == "Simulated failure #3"
     )
     assert notification["sent_at"] is None
 
@@ -291,4 +443,20 @@ def test_missing_provider_is_rejected(
             recipient="security-operator",
             subject="Missing Provider",
             message="Provider does not exist.",
+        )
+
+
+def test_negative_retry_count_is_rejected(
+    test_database,
+):
+
+    with pytest.raises(
+        ValueError,
+        match="max_retries",
+    ):
+
+        NotificationService(
+            database=test_database,
+            providers={},
+            max_retries=-1,
         )
