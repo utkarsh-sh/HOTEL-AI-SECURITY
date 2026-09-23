@@ -185,6 +185,10 @@ export async function getCameras() {
   return request("/cameras");
 }
 
+export async function getEventQuality() {
+  return request("/event-quality");
+}
+
 export async function getEvents() {
   return request("/events");
 }

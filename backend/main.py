@@ -282,6 +282,20 @@ def get_camera_health(
 # EVENTS
 # ============================================================
 
+@app.get("/event-quality")
+def get_event_quality(
+    current_user: dict = Depends(get_current_user),
+):
+    database = EventDatabase()
+
+    try:
+        return database.get_event_quality_metrics()
+
+    finally:
+        database.close()
+
+
+
 
 @app.get("/events")
 def get_events(

@@ -7,6 +7,7 @@ import {
   logout,
   getCameras,
   getEvents,
+  getEventQuality,
   getHealth,
   acknowledgeEvent,
   dispatchEvent,
@@ -22,6 +23,7 @@ import {
 function App() {
   const [cameras, setCameras] = useState([]);
   const [events, setEvents] = useState([]);
+  const [eventQuality, setEventQuality] = useState(null);
   const [systemHealth, setSystemHealth] = useState(null);
   const [cameraHealthSummary, setCameraHealthSummary] = useState(null);
 
@@ -83,6 +85,7 @@ const [selectedCamera, setSelectedCamera] = useState(null);
     setAuthUser(null);
     setCameras([]);
     setEvents([]);
+    setEventQuality(null);
     setSystemHealth(null);
     setSelectedEvent(null);
     setCameraHealthSummary(null);
@@ -233,17 +236,20 @@ const [selectedCamera, setSelectedCamera] = useState(null);
         eventData,
         healthData,
         cameraHealthSummaryData,
+        eventQualityData,
       ] = await Promise.all([
         getCameras(),
         getEvents(),
         getHealth(),
         getCameraHealthSummary(),
+        getEventQuality(),
       ]);
 
       setCameras(cameraData.cameras || []);
       setEvents(eventData.events || []);
       setSystemHealth(healthData);
       setCameraHealthSummary(cameraHealthSummaryData);
+      setEventQuality(eventQualityData);
     } catch (err) {
       console.error("Dashboard API error:", err);
       setError(err.message);
@@ -1051,6 +1057,35 @@ const [selectedCamera, setSelectedCamera] = useState(null);
 
           </div>
 
+        </section>
+
+        {/* =========================
+            EVENT QUALITY
+        ========================= */}
+        <section className="stats-grid">
+          <div className="stat-card">
+            <div className="stat-header">
+              <span>
+                Event Quality
+              </span>
+
+              <span className="stat-icon purple">
+                ◇
+              </span>
+            </div>
+
+            <div className="stat-value">
+              {eventQuality
+                ? `${eventQuality.false_positive_rate_percent.toFixed(1)}%`
+                : "—"}
+            </div>
+
+            <div className="stat-footer">
+              {eventQuality
+                ? `${eventQuality.false_positive_events} false positives / ${eventQuality.reviewed_events} reviewed`
+                : "Loading quality data..."}
+            </div>
+          </div>
         </section>
 
         {/* =========================

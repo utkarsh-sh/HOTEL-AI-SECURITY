@@ -266,6 +266,87 @@ class EventDatabase:
         return cursor.fetchall()
 
     # ==========================================================
+    # EVENT QUALITY METRICS
+    # ==========================================================
+
+    def get_event_quality_metrics(self):
+        """
+        Return operator feedback metrics for generated events.
+
+        Operator False-Positive Rate is calculated only from
+        completed operator reviews:
+
+            FALSE_POSITIVE
+            -------------------------------
+            FALSE_POSITIVE + RESOLVED
+
+        Unreviewed events such as NEW, ACKNOWLEDGED, and
+        DISPATCHED are excluded from the denominator.
+        """
+
+        row = self.connection.execute(
+            """
+            SELECT
+                COUNT(*) AS total_events,
+                SUM(
+                    CASE
+                        WHEN status = 'FALSE_POSITIVE'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS false_positive_events,
+                SUM(
+                    CASE
+                        WHEN status = 'RESOLVED'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS resolved_events
+            FROM events
+            """
+        ).fetchone()
+
+        total_events = int(
+            row["total_events"] or 0
+        )
+
+        false_positive_events = int(
+            row["false_positive_events"] or 0
+        )
+
+        resolved_events = int(
+            row["resolved_events"] or 0
+        )
+
+        reviewed_events = (
+            false_positive_events
+            + resolved_events
+        )
+
+        false_positive_rate = (
+            (
+                false_positive_events
+                / reviewed_events
+            )
+            * 100.0
+            if reviewed_events > 0
+            else 0.0
+        )
+
+        return {
+            "total_events": total_events,
+            "false_positive_events": (
+                false_positive_events
+            ),
+            "resolved_events": resolved_events,
+            "reviewed_events": reviewed_events,
+            "false_positive_rate_percent": round(
+                false_positive_rate,
+                2,
+            ),
+        }
+
+    # ==========================================================
     # INTERNAL ATOMIC UPDATE
     # ==========================================================
 
