@@ -19,10 +19,8 @@ from ai.evidence_recorder import EvidenceRecorder
 
 from database.event_database import EventDatabase
 from database.camera_database import CameraDatabase
-from database.notification_database import NotificationDatabase
-
+from notifications.dispatcher import NotificationDispatcher
 from notifications.providers import ConsoleNotificationProvider
-from notifications.service import NotificationService
 
 from rules.intrusion_rules import IntrusionRule
 
@@ -155,7 +153,7 @@ def process_camera(
     event_database,
     camera_database,
     camera_health_events,
-    notification_service,
+    notification_dispatcher,
 ):
     """
     Process one configured camera from the shared CameraManager.
@@ -467,8 +465,8 @@ def process_camera(
 
                     try:
 
-                        notification_results = (
-                            notification_service.notify_event(
+                        notification_future = (
+                            notification_dispatcher.notify_event(
                                 event_id=offline_event_id,
                                 severity="HIGH",
                                 recipient=None,
@@ -487,9 +485,10 @@ def process_camera(
                         )
 
                         print(
-                            f"[CAMERA OFFLINE NOTIFICATION] "
+                            f"[CAMERA OFFLINE NOTIFICATION QUEUED] "
                             f"Camera={camera_id} "
-                            f"Results={notification_results}"
+                            f"EventID={offline_event_id} "
+                            f"Future={notification_future}"
                         )
 
                     except Exception as notification_error:
@@ -777,8 +776,8 @@ def process_camera(
 
                     try:
 
-                        notification_results = (
-                            notification_service.notify_event(
+                        notification_future = (
+                            notification_dispatcher.notify_event(
                                 event_id=event_id,
                                 severity=event["severity"],
                                 recipient=None,
@@ -793,15 +792,11 @@ def process_camera(
                             )
                         )
 
-                        for notification_result in (
-                            notification_results
-                        ):
-                            print(
-                                f"[NOTIFICATION] "
-                                f"EventID={event_id} "
-                                f"Channel={notification_result['provider']} "
-                                f"Success={notification_result['success']}"
-                            )
+                        print(
+                            f"[NOTIFICATION QUEUED] "
+                            f"EventID={event_id} "
+                            f"Future={notification_future}"
+                        )
 
                     except Exception as notification_error:
 
@@ -1025,6 +1020,7 @@ def process_camera_worker(
     detector,
     zones,
     zone_detector,
+    notification_dispatcher=None,
 ):
     """
     Process one camera inside a worker thread.
@@ -1035,7 +1031,6 @@ def process_camera_worker(
 
     event_database = None
     camera_database = None
-    notification_database = None
 
     try:
         event_database = EventDatabase(
@@ -1044,17 +1039,6 @@ def process_camera_worker(
 
         camera_database = CameraDatabase(
             "database/hotel_security.db"
-        )
-
-        notification_database = NotificationDatabase(
-            "database/hotel_security.db"
-        )
-
-        notification_service = NotificationService(
-            database=notification_database,
-            providers={
-                "CONSOLE": ConsoleNotificationProvider(),
-            },
         )
 
         camera_health_events = CameraHealthEventService(
@@ -1070,7 +1054,7 @@ def process_camera_worker(
             event_database=event_database,
             camera_database=camera_database,
             camera_health_events=camera_health_events,
-            notification_service=notification_service,
+            notification_dispatcher=notification_dispatcher,
         )
 
     finally:
@@ -1080,8 +1064,6 @@ def process_camera_worker(
         if camera_database is not None:
             camera_database.close()
 
-        if notification_database is not None:
-            notification_database.close()
 
 
 # ============================================================
@@ -1097,6 +1079,7 @@ def main():
     camera_manager = None
     camera_database = None
     event_database = None
+    notification_dispatcher = None
 
     results = []
 
@@ -1179,6 +1162,15 @@ def main():
 
         camera_health_events = CameraHealthEventService(
             event_database=event_database
+        )
+
+        notification_dispatcher = NotificationDispatcher(
+            providers={
+                "CONSOLE": ConsoleNotificationProvider(),
+            },
+            database_path="database/hotel_security.db",
+            max_workers=2,
+            max_retries=2,
         )
 
         print(
@@ -1322,6 +1314,7 @@ def main():
                     detector=detector,
                     zones=zones,
                     zone_detector=zone_detector,
+                    notification_dispatcher=notification_dispatcher,
                 )
 
             worker_results = worker_pool.run(
@@ -1379,6 +1372,30 @@ def main():
         raise
 
     finally:
+
+        # ----------------------------------------------------
+        # Drain and stop asynchronous notification workers
+        # ----------------------------------------------------
+
+        if notification_dispatcher is not None:
+
+            try:
+
+                notification_dispatcher.shutdown(
+                    wait=True
+                )
+
+                print(
+                    "Notification dispatcher shut down cleanly."
+                )
+
+            except Exception as error:
+
+                print(
+                    f"[CLEANUP WARNING] "
+                    f"Notification dispatcher shutdown failed: "
+                    f"{error}"
+                )
 
         # ----------------------------------------------------
         # Release all managed camera sources
