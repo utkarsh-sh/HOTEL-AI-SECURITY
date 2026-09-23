@@ -370,3 +370,105 @@ def test_process_camera_fall_pipeline_does_not_replace_intrusion_pipeline(
     }
 
     event_database.close()
+
+
+class FailingEvidenceRecorder(FakeEvidenceRecorder):
+    def start_event_capture(self, event_type, event_id):
+        self.started.append((event_type, event_id))
+        raise RuntimeError("simulated evidence recorder failure")
+
+
+def test_process_camera_continues_when_evidence_capture_fails(
+    monkeypatch,
+    tmp_path,
+):
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    source = FakeSource(frame)
+    camera_manager = FakeCameraManager(source)
+    camera_database = FakeCameraDatabase()
+    camera_health_events = FakeCameraHealthEvents()
+    dispatcher = RecordingDispatcher()
+
+    event_database = EventDatabase(
+        tmp_path / "events.db"
+    )
+
+    writer = FakeWriter()
+
+    monkeypatch.setattr(
+        runner,
+        "get_capture_metadata",
+        lambda source: (1.0, 3, 640, 480),
+    )
+    monkeypatch.setattr(
+        runner,
+        "is_finite_source",
+        lambda camera_config: True,
+    )
+    monkeypatch.setattr(
+        runner.cv2,
+        "VideoWriter",
+        lambda *args, **kwargs: writer,
+    )
+    monkeypatch.setattr(
+        runner,
+        "EvidenceRecorder",
+        FailingEvidenceRecorder,
+    )
+    monkeypatch.setattr(
+        runner,
+        "CameraHealthMonitor",
+        FakeHealthMonitor,
+    )
+    monkeypatch.setattr(
+        runner,
+        "PersonTracker",
+        FakeTracker,
+    )
+    monkeypatch.setattr(
+        runner,
+        "IntrusionRule",
+        FakeIntrusionRule,
+    )
+
+    result = runner.process_camera(
+        camera_config=make_camera_config(),
+        camera_manager=camera_manager,
+        detector=FakeDetector(),
+        zones=[],
+        zone_detector=FakeZoneDetector(),
+        event_database=event_database,
+        camera_database=camera_database,
+        camera_health_events=camera_health_events,
+        notification_dispatcher=dispatcher,
+    )
+
+    assert result["camera_id"] == "CAM-001"
+    assert result["error"] is None
+    assert result["frames"] == 3
+    assert result["ai_frames"] == 3
+    assert result["events"] == 1
+
+    events = event_database.get_all_events()
+
+    assert len(events) == 1
+
+    event = events[0]
+
+    assert event["event_type"] == "FALL"
+    assert event["severity"] == "HIGH"
+    assert event["status"] == "NEW"
+    assert event["evidence_path"] is None
+
+    assert len(dispatcher.calls) == 1
+
+    notification = dispatcher.calls[0]
+
+    assert notification["event_id"] == event["id"]
+    assert notification["severity"] == "HIGH"
+
+    assert writer.frames == 3
+    assert writer.released is True
+
+    event_database.close()

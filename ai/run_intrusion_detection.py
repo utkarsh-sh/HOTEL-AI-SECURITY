@@ -764,16 +764,35 @@ def process_camera(
                     # ----------------------------------------
                     # Start evidence capture
                     # ----------------------------------------
+                    #
+                    # Evidence is an important security artifact,
+                    # but an unexpected recorder failure must not
+                    # terminate the live camera worker. The event
+                    # has already been persisted in the database,
+                    # so processing can continue without evidence.
+                    # ----------------------------------------
 
-                    evidence_path = (
-                        evidence_recorder
-                        .start_event_capture(
-                            event_type=event[
-                                "event_type"
-                            ],
-                            event_id=event_id,
+                    evidence_path = None
+
+                    try:
+
+                        evidence_path = (
+                            evidence_recorder
+                            .start_event_capture(
+                                event_type=event[
+                                    "event_type"
+                                ],
+                                event_id=event_id,
+                            )
                         )
-                    )
+
+                    except Exception as evidence_error:
+
+                        print(
+                            f"[EVIDENCE ERROR] "
+                            f"EventID={event_id} "
+                            f"Error={evidence_error}"
+                        )
 
                     # ----------------------------------------
                     # Save evidence path
@@ -781,12 +800,22 @@ def process_camera(
 
                     if evidence_path is not None:
 
-                        event_database.update_evidence_path(
-                            event_id=event_id,
-                            evidence_path=str(
-                                evidence_path
-                            ),
-                        )
+                        try:
+
+                            event_database.update_evidence_path(
+                                event_id=event_id,
+                                evidence_path=str(
+                                    evidence_path
+                                ),
+                            )
+
+                        except Exception as evidence_database_error:
+
+                            print(
+                                f"[EVIDENCE PATH ERROR] "
+                                f"EventID={event_id} "
+                                f"Error={evidence_database_error}"
+                            )
 
                     # ----------------------------------------
                     # Send security notification
