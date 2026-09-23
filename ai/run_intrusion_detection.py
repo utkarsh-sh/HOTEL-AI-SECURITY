@@ -6,6 +6,7 @@ import numpy as np
 
 from ai.person_detector import PersonDetector
 from ai.tracker import PersonTracker
+from ai.fall_event_processor import FallEventProcessor
 from ai.zone_detector import ZoneDetector
 from ai.camera_health import (
     CameraHealthMonitor,
@@ -47,6 +48,7 @@ CAMERA_FAILURE_THRESHOLD = 3
 
 CAMERA_HEALTH_MODEL_VERSION = "camera-health-v1"
 INTRUSION_MODEL_VERSION = "prototype-v1"
+FALL_MODEL_VERSION = "fall-heuristic-v1"
 
 
 # ============================================================
@@ -187,6 +189,11 @@ def process_camera(
 
     intrusion_rule = IntrusionRule(
         persistence_frames=3
+    )
+
+    fall_event_processor = FallEventProcessor(
+        persistence_frames=3,
+        min_horizontal_aspect_ratio=1.5,
     )
 
     camera_health = CameraHealthMonitor(
@@ -617,9 +624,22 @@ def process_camera(
                 # Intrusion rule
                 # --------------------------------------------
 
-                events = intrusion_rule.evaluate(
+                intrusion_events = intrusion_rule.evaluate(
                     zone_results
                 )
+
+                # --------------------------------------------
+                # Fall / person-down analysis
+                # --------------------------------------------
+
+                fall_events = fall_event_processor.evaluate(
+                    tracks
+                )
+
+                # Both event types use the same downstream
+                # persistence, evidence, database, and
+                # notification pipeline.
+                events = intrusion_events + fall_events
 
                 # --------------------------------------------
                 # Draw zones
@@ -720,12 +740,12 @@ def process_camera(
                                 "severity"
                             ],
                             camera_id=camera_id,
-                            zone_id=event[
+                            zone_id=event.get(
                                 "zone_id"
-                            ],
-                            zone_name=event[
+                            ),
+                            zone_name=event.get(
                                 "zone_name"
-                            ],
+                            ),
                             track_id=event[
                                 "track_id"
                             ],
@@ -733,7 +753,9 @@ def process_camera(
                                 "message"
                             ],
                             model_version=(
-                                INTRUSION_MODEL_VERSION
+                                FALL_MODEL_VERSION
+                                if event["event_type"] == "FALL"
+                                else INTRUSION_MODEL_VERSION
                             ),
                             evidence_path=None,
                         )
@@ -811,12 +833,12 @@ def process_camera(
                     # ----------------------------------------
 
                     print(
-                        f"[INTRUSION EVENT] "
+                        f"[{event['event_type']} EVENT] "
                         f"Camera={camera_id} "
                         f"Frame={frame_index} "
                         f"EventID={event_id} "
                         f"Track={event['track_id']} "
-                        f"Zone={event['zone_name']} "
+                        f"Zone={event.get('zone_name') or 'N/A'} "
                         f"Severity={event['severity']} "
                         f"Status=NEW"
                     )
@@ -841,12 +863,17 @@ def process_camera(
                         )
 
                     # ----------------------------------------
-                    # Display intrusion alert
+                    # Display security alert
                     # ----------------------------------------
+
+                    if event["event_type"] == "FALL":
+                        alert_text = "!!! FALL / PERSON DOWN DETECTED !!!"
+                    else:
+                        alert_text = "!!! INTRUSION DETECTED !!!"
 
                     cv2.putText(
                         frame,
-                        "!!! INTRUSION DETECTED !!!",
+                        alert_text,
                         (50, 60),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         1.0,
