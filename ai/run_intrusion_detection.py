@@ -7,6 +7,7 @@ import numpy as np
 from ai.person_detector import PersonDetector
 from ai.tracker import PersonTracker
 from ai.fall_event_processor import FallEventProcessor
+from ai.fire_smoke_event_processor import FireSmokeEventProcessor
 from ai.zone_detector import ZoneDetector
 from ai.camera_health import (
     CameraHealthMonitor,
@@ -49,6 +50,7 @@ CAMERA_FAILURE_THRESHOLD = 3
 CAMERA_HEALTH_MODEL_VERSION = "camera-health-v1"
 INTRUSION_MODEL_VERSION = "prototype-v1"
 FALL_MODEL_VERSION = "fall-heuristic-v1"
+FIRE_SMOKE_MODEL_VERSION = "fire-smoke-event-v1"
 
 
 # ============================================================
@@ -156,6 +158,8 @@ def process_camera(
     camera_database,
     camera_health_events,
     notification_dispatcher,
+    fire_smoke_detection_provider=None,
+    fire_smoke_event_processor=None,
 ):
     """
     Process one configured camera from the shared CameraManager.
@@ -195,6 +199,13 @@ def process_camera(
         persistence_frames=3,
         min_horizontal_aspect_ratio=1.5,
     )
+
+    if fire_smoke_event_processor is None:
+        fire_smoke_event_processor = FireSmokeEventProcessor(
+            persistence_frames=3,
+            min_confidence=0.50,
+            region_tolerance=75.0,
+        )
 
     camera_health = CameraHealthMonitor(
         camera_id=camera_id,
@@ -636,10 +647,34 @@ def process_camera(
                     tracks
                 )
 
-                # Both event types use the same downstream
+                # --------------------------------------------
+                # Fire / Smoke analysis
+                # --------------------------------------------
+
+                fire_smoke_events = []
+
+                if fire_smoke_detection_provider is not None:
+
+                    fire_smoke_detections = (
+                        fire_smoke_detection_provider(
+                            frame
+                        )
+                    )
+
+                    fire_smoke_events = (
+                        fire_smoke_event_processor.evaluate(
+                            fire_smoke_detections
+                        )
+                    )
+
+                # All event types use the same downstream
                 # persistence, evidence, database, and
                 # notification pipeline.
-                events = intrusion_events + fall_events
+                events = (
+                    intrusion_events
+                    + fall_events
+                    + fire_smoke_events
+                )
 
                 # --------------------------------------------
                 # Draw zones
@@ -746,16 +781,21 @@ def process_camera(
                             zone_name=event.get(
                                 "zone_name"
                             ),
-                            track_id=event[
+                            track_id=event.get(
                                 "track_id"
-                            ],
+                            ),
                             message=event[
                                 "message"
                             ],
                             model_version=(
                                 FALL_MODEL_VERSION
                                 if event["event_type"] == "FALL"
-                                else INTRUSION_MODEL_VERSION
+                                else (
+                                    FIRE_SMOKE_MODEL_VERSION
+                                    if event["event_type"]
+                                    in {"FIRE", "SMOKE"}
+                                    else INTRUSION_MODEL_VERSION
+                                )
                             ),
                             evidence_path=None,
                         )
@@ -1077,6 +1117,8 @@ def process_camera_worker(
     zones,
     zone_detector,
     notification_dispatcher=None,
+    fire_smoke_detection_provider=None,
+    fire_smoke_event_processor=None,
 ):
     """
     Process one camera inside a worker thread.
@@ -1111,6 +1153,12 @@ def process_camera_worker(
             camera_database=camera_database,
             camera_health_events=camera_health_events,
             notification_dispatcher=notification_dispatcher,
+            fire_smoke_detection_provider=(
+                fire_smoke_detection_provider
+            ),
+            fire_smoke_event_processor=(
+                fire_smoke_event_processor
+            ),
         )
 
     finally:
