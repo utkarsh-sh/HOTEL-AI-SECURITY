@@ -1,3 +1,4 @@
+from pathlib import Path
 import numpy as np
 
 import ai.run_intrusion_detection as runner
@@ -544,5 +545,191 @@ def test_process_camera_fire_does_not_replace_existing_fall_pipeline(
         "Hotel Security Alert - FIRE",
         "Hotel Security Alert - FALL",
     }
+
+    event_database.close()
+
+
+def test_process_camera_real_fire_smoke_adapter_end_to_end(
+    monkeypatch,
+    tmp_path,
+):
+    """
+    Real-model integration test.
+
+    This test is intentionally opt-in through RUN_REAL_FIRE_SMOKE=1
+    because it loads the ONNX model and requires CUDA/ONNX Runtime.
+    """
+
+    import os
+
+    if os.environ.get("RUN_REAL_FIRE_SMOKE") != "1":
+        import pytest
+
+        pytest.skip(
+            "Set RUN_REAL_FIRE_SMOKE=1 to run the real fire/smoke model test."
+        )
+
+    import cv2
+
+    from ai.fire_smoke_event_processor import FireSmokeEventProcessor
+    from ai.fire_smoke_vision_adapter import FireSmokeVisionAdapter
+
+    model_path = Path(
+        "data/models/fire_smoke/cctv_yolov8n/best.onnx"
+    )
+
+    image_path = Path(
+        "data/models/fire_smoke/test/fire_frame.jpg"
+    )
+
+    if not model_path.exists():
+        raise AssertionError(
+            f"Fire/smoke model missing: {model_path}"
+        )
+
+    if not image_path.exists():
+        raise AssertionError(
+            f"Fire test image missing: {image_path}"
+        )
+
+    frame = cv2.imread(str(image_path))
+
+    if frame is None:
+        raise AssertionError(
+            f"Unable to load fire test image: {image_path}"
+        )
+
+    source = FakeSource(frame)
+
+    camera_manager = FakeCameraManager(source)
+    camera_database = FakeCameraDatabase()
+    camera_health_events = FakeCameraHealthEvents()
+    dispatcher = RecordingDispatcher()
+
+    event_database = EventDatabase(
+        tmp_path / "real_fire_events.db"
+    )
+
+    writer = FakeWriter()
+
+    monkeypatch.setattr(
+        runner,
+        "get_capture_metadata",
+        lambda source: (
+            1.0,
+            3,
+            640,
+            480,
+        ),
+    )
+
+    monkeypatch.setattr(
+        runner,
+        "is_finite_source",
+        lambda camera_config: True,
+    )
+
+    monkeypatch.setattr(
+        runner.cv2,
+        "VideoWriter",
+        lambda *args, **kwargs: writer,
+    )
+
+    monkeypatch.setattr(
+        runner,
+        "EvidenceRecorder",
+        FakeEvidenceRecorder,
+    )
+
+    monkeypatch.setattr(
+        runner,
+        "CameraHealthMonitor",
+        FakeHealthMonitor,
+    )
+
+    monkeypatch.setattr(
+        runner,
+        "PersonTracker",
+        FakeTracker,
+    )
+
+    monkeypatch.setattr(
+        runner,
+        "IntrusionRule",
+        FakeIntrusionRule,
+    )
+
+    monkeypatch.setattr(
+        runner,
+        "FallEventProcessor",
+        NoFallProcessor,
+    )
+
+    adapter = FireSmokeVisionAdapter(
+        model_path,
+        confidence_threshold=0.50,
+    )
+
+    assert "CUDAExecutionProvider" in adapter.active_providers
+
+    processor = FireSmokeEventProcessor(
+        persistence_frames=3,
+        min_confidence=0.50,
+        region_tolerance=75.0,
+    )
+
+    result = runner.process_camera(
+        camera_config=make_camera_config(),
+        camera_manager=camera_manager,
+        detector=FakeDetector(),
+        zones=[],
+        zone_detector=FakeZoneDetector(),
+        event_database=event_database,
+        camera_database=camera_database,
+        camera_health_events=camera_health_events,
+        notification_dispatcher=dispatcher,
+        fire_smoke_detection_provider=adapter.detect,
+        fire_smoke_event_processor=processor,
+    )
+
+    assert result["camera_id"] == "CAM-001"
+    assert result["error"] is None
+    assert result["frames"] == 3
+    assert result["ai_frames"] == 3
+
+    # FireSmokeDetector persistence is 3 frames, so the same
+    # physical fire should produce one event rather than one
+    # event per frame.
+    assert result["events"] == 1
+
+    events = event_database.get_all_events()
+
+    assert len(events) == 1
+
+    event = events[0]
+
+    assert event["event_type"] == "FIRE"
+    assert event["severity"] == "CRITICAL"
+    assert event["camera_id"] == "CAM-001"
+    assert event["track_id"] is None
+    assert event["zone_id"] is None
+    assert event["zone_name"] is None
+    assert event["model_version"] == "fire-smoke-event-v1"
+    assert event["status"] == "NEW"
+    assert event["evidence_path"] is None
+
+    assert len(dispatcher.calls) == 1
+
+    notification = dispatcher.calls[0]
+
+    assert notification["severity"] == "CRITICAL"
+    assert notification["recipient"] is None
+    assert notification["subject"] == (
+        "Hotel Security Alert - FIRE"
+    )
+    assert "Potential fire detected" in notification["message"]
+
+    assert writer.frames == 3
+    assert writer.released is True
 
     event_database.close()
