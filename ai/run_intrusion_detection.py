@@ -28,7 +28,10 @@ from ai.camera_health_events import (
 from ai.evidence_recorder import EvidenceRecorder
 
 from database.event_database import EventDatabase
-from database.camera_database import CameraDatabase
+from database.camera_database import (
+    BOOTSTRAP_METADATA_KEY,
+    CameraDatabase,
+)
 from notifications.dispatcher import NotificationDispatcher
 from notifications.providers import ConsoleNotificationProvider
 
@@ -36,7 +39,10 @@ from rules.intrusion_rules import IntrusionRule
 from rules.crowding_rules import CrowdingRule
 from rules.after_hours_rules import AfterHoursRule
 
-from video.camera_config import load_camera_configs
+from video.camera_config import (
+    load_camera_configs,
+    load_camera_configs_from_database,
+)
 from video.frame_sampler import FrameSampler
 from video.source_factory import create_video_source
 from video.camera_manager import CameraManager
@@ -1318,16 +1324,39 @@ def main():
     try:
 
         # ----------------------------------------------------
-        # Load camera configuration
+        # Shared camera database
+        #
+        # The database is authoritative after one-time bootstrap.
+        # JSON is read only when bootstrap has not completed.
         # ----------------------------------------------------
 
-        camera_configs = load_camera_configs(
-            CAMERA_CONFIG_PATH
+        camera_database = CameraDatabase(
+            "database/hotel_security.db"
+        )
+
+        if camera_database.get_metadata(
+            BOOTSTRAP_METADATA_KEY
+        ) != "1":
+            bootstrap_camera_configs = load_camera_configs(
+                CAMERA_CONFIG_PATH
+            )
+
+            if not bootstrap_camera_configs:
+                raise RuntimeError(
+                    "No bootstrap cameras configured."
+                )
+
+            camera_database.initialize_from_bootstrap(
+                bootstrap_camera_configs
+            )
+
+        camera_configs = load_camera_configs_from_database(
+            camera_database
         )
 
         if not camera_configs:
             raise RuntimeError(
-                "No cameras configured."
+                "No cameras configured in the camera database."
             )
 
         print(
@@ -1508,10 +1537,6 @@ def main():
         # ----------------------------------------------------
 
         event_database = EventDatabase(
-            "database/hotel_security.db"
-        )
-
-        camera_database = CameraDatabase(
             "database/hotel_security.db"
         )
 
