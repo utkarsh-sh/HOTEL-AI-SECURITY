@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+﻿from dataclasses import dataclass
 from statistics import mean
 from typing import List, Sequence
 
@@ -20,6 +20,7 @@ class EventEvaluationResult:
 
     matching: EventMatchingResult
     metrics: EvaluationMetrics
+    metrics_by_event_type: dict[str, EvaluationMetrics]
     detection_latencies_seconds: List[float]
     mean_detection_latency_seconds: float | None
 
@@ -60,6 +61,42 @@ def evaluate_events(
         false_negatives=matching.false_negatives,
     )
 
+    event_types = sorted(
+        {
+            event.event_type
+            for event in ground_truth
+        }
+        | {
+            event.event_type
+            for event in predictions
+        }
+    )
+
+    metrics_by_event_type: dict[str, EvaluationMetrics] = {}
+
+    for event_type in event_types:
+        type_ground_truth = [
+            event
+            for event in ground_truth
+            if event.event_type == event_type
+        ]
+        type_predictions = [
+            event
+            for event in predictions
+            if event.event_type == event_type
+        ]
+
+        type_matching = match_events(
+            ground_truth=type_ground_truth,
+            predictions=type_predictions,
+        )
+
+        metrics_by_event_type[event_type] = calculate_metrics(
+            true_positives=type_matching.true_positives,
+            false_positives=type_matching.false_positives,
+            false_negatives=type_matching.false_negatives,
+        )
+
     detection_latencies_seconds: List[float] = []
 
     for match in matching.matches:
@@ -86,6 +123,7 @@ def evaluate_events(
     return EventEvaluationResult(
         matching=matching,
         metrics=metrics,
+        metrics_by_event_type=metrics_by_event_type,
         detection_latencies_seconds=(
             detection_latencies_seconds
         ),
