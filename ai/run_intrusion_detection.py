@@ -33,6 +33,7 @@ from notifications.dispatcher import NotificationDispatcher
 from notifications.providers import ConsoleNotificationProvider
 
 from rules.intrusion_rules import IntrusionRule
+from rules.crowding_rules import CrowdingRule
 
 from video.camera_config import load_camera_configs
 from video.frame_sampler import FrameSampler
@@ -57,10 +58,12 @@ CAMERA_FAILURE_THRESHOLD = 3
 
 CAMERA_HEALTH_MODEL_VERSION = "camera-health-v1"
 INTRUSION_MODEL_VERSION = "prototype-v1"
+CROWDING_MODEL_VERSION = "crowding-rule-v1"
 FALL_MODEL_VERSION = "fall-heuristic-v1"
 FIRE_SMOKE_MODEL_PATH = Path("data/models/fire_smoke/cctv_yolov8n/best.onnx")
 FIRE_SMOKE_MODEL_VERSION = "fire-smoke-event-v1"
 WEAPON_MODEL_PATH = Path("data/models/weapon/gun-knife-yolo11n/best.onnx")
+RULES_CONFIG_PATH = "configs/rules.json"
 
 
 # ============================================================
@@ -78,6 +81,32 @@ def load_zones(path):
         config = json.load(file)
 
     return config["zones"]
+
+
+def load_rule_config(path):
+    """Load configurable security-rule settings from JSON."""
+
+    with open(path, "r", encoding="utf-8-sig") as file:
+        config = json.load(file)
+
+    if not isinstance(config, dict):
+        raise ValueError("Rule configuration root must be an object.")
+
+    return config
+
+
+def get_event_model_version(event_type):
+    """Return the model/rule version associated with an event."""
+
+    if event_type == "FALL":
+        return FALL_MODEL_VERSION
+    if event_type in {"FIRE", "SMOKE"}:
+        return FIRE_SMOKE_MODEL_VERSION
+    if event_type == "WEAPON":
+        return WEAPON_MODEL_VERSION
+    if event_type == "CROWDING":
+        return CROWDING_MODEL_VERSION
+    return INTRUSION_MODEL_VERSION
 
 
 def get_capture_metadata(source):
@@ -172,6 +201,7 @@ def process_camera(
     fire_smoke_event_processor=None,
     weapon_detection_provider=None,
     weapon_event_processor=None,
+    crowding_config=None,
 ):
     """
     Process one configured camera from the shared CameraManager.
@@ -225,6 +255,13 @@ def process_camera(
             min_confidence=0.50,
             region_tolerance=75.0,
             track_association_tolerance=100.0,
+        )
+
+    crowding_rule = None
+    if crowding_config is not None and crowding_config.get("enabled", True):
+        crowding_rule = CrowdingRule(
+            minimum_people=int(crowding_config.get("minimum_people", 5)),
+            persistence_frames=int(crowding_config.get("persistence_frames", 3)),
         )
 
     camera_health = CameraHealthMonitor(
@@ -660,6 +697,14 @@ def process_camera(
                 )
 
                 # --------------------------------------------
+                # Crowd occupancy rule
+                # --------------------------------------------
+
+                crowding_events = []
+                if crowding_rule is not None:
+                    crowding_events = crowding_rule.evaluate(tracks)
+
+                # --------------------------------------------
                 # Fall / person-down analysis
                 # --------------------------------------------
 
@@ -707,6 +752,7 @@ def process_camera(
                 # notification pipeline.
                 events = (
                     intrusion_events
+                    + crowding_events
                     + fall_events
                     + fire_smoke_events
                     + weapon_events
@@ -823,19 +869,8 @@ def process_camera(
                             message=event[
                                 "message"
                             ],
-                            model_version=(
-                                FALL_MODEL_VERSION
-                                if event["event_type"] == "FALL"
-                                else (
-                                    FIRE_SMOKE_MODEL_VERSION
-                                    if event["event_type"]
-                                    in {"FIRE", "SMOKE"}
-                                    else (
-                                        WEAPON_MODEL_VERSION
-                                        if event["event_type"] == "WEAPON"
-                                        else INTRUSION_MODEL_VERSION
-                                    )
-                                )
+                            model_version=get_event_model_version(
+                                event["event_type"]
                             ),
                             evidence_path=None,
                         )
@@ -975,7 +1010,9 @@ def process_camera(
                     # Display security alert
                     # ----------------------------------------
 
-                    if event["event_type"] == "FALL":
+                    if event["event_type"] == "CROWDING":
+                        alert_text = "!!! CROWDING DETECTED !!!"
+                    elif event["event_type"] == "FALL":
                         alert_text = "!!! FALL / PERSON DOWN DETECTED !!!"
                     else:
                         alert_text = "!!! INTRUSION DETECTED !!!"
@@ -1161,6 +1198,7 @@ def process_camera_worker(
     fire_smoke_event_processor=None,
     weapon_detection_provider=None,
     weapon_event_processor=None,
+    crowding_config=None,
 ):
     """
     Process one camera inside a worker thread.
@@ -1207,6 +1245,7 @@ def process_camera_worker(
             weapon_event_processor=(
                 weapon_event_processor
             ),
+            crowding_config=crowding_config,
         )
 
     finally:
@@ -1390,6 +1429,13 @@ def main():
         zones = load_zones(
             ZONE_PATH
         )
+
+        rule_config = load_rule_config(RULES_CONFIG_PATH)
+        crowding_config = rule_config.get("crowding", {})
+        if not isinstance(crowding_config, dict):
+            raise ValueError("'crowding' rule configuration must be an object.")
+
+        print(f"Crowding rule configuration: {crowding_config}")
 
         zone_detector = ZoneDetector(
             zones
@@ -1590,6 +1636,7 @@ def main():
                         if fire_smoke_adapter is not None
                         else None
                     ),
+                    crowding_config=crowding_config,
                 )
 
             worker_results = worker_pool.run(
