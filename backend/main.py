@@ -1,5 +1,8 @@
 from backend.notification_routes import router as notification_router
+import json
+import sqlite3
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Form, Depends
@@ -16,6 +19,10 @@ from backend.auth_service import (
     AuthenticationError,
 )
 from backend.auth_jwt import create_access_token
+from backend.camera_schemas import (
+    CameraCreateRequest,
+    CameraUpdateRequest,
+)
 
 from backend.auth_dependencies import (
     get_current_user,
@@ -58,6 +65,51 @@ app.add_middleware(
 
 class EventStatusUpdate(BaseModel):
     resolution: Optional[str] = None
+
+
+def _sanitize_camera_source(source, source_type):
+    # Return an operator-safe camera source.
+    raw_source = str(source or "")
+    if str(source_type or "").strip().lower() != "rtsp":
+        return raw_source
+
+    try:
+        parsed = urlsplit(raw_source)
+    except ValueError:
+        return "rtsp://***"
+
+    if not parsed.netloc:
+        return raw_source
+
+    authority = parsed.netloc.split("@", 1)[-1]
+    safe_netloc = f"***:***@{authority}"
+
+    return urlunsplit(
+        (
+            parsed.scheme,
+            safe_netloc,
+            parsed.path,
+            "",
+            "",
+        )
+    )
+
+
+def serialize_camera(camera):
+    # Serialize camera data without exposing RTSP credentials.
+    data = dict(camera)
+    raw_source = data.get("source")
+    source_type = data.get("source_type")
+
+    data["source"] = _sanitize_camera_source(
+        raw_source,
+        source_type,
+    )
+    data["source_configured"] = bool(
+        str(raw_source or "").strip()
+    )
+
+    return data
 
 
 # ============================================================
@@ -166,7 +218,10 @@ def get_cameras(
 
         return {
             "total": len(cameras),
-            "cameras": [dict(camera) for camera in cameras],
+            "cameras": [
+                serialize_camera(camera)
+                for camera in cameras
+            ],
         }
 
     finally:
@@ -220,6 +275,298 @@ def get_camera_health_summary(
     finally:
         database.close()
 
+@app.post("/cameras")
+def create_camera(
+    request: CameraCreateRequest,
+    current_user: dict = Depends(
+        require_roles("ADMIN")
+    ),
+):
+    camera_id = request.camera_id.strip()
+    name = request.name.strip()
+    location = request.location.strip()
+    source = request.source.strip()
+
+    if not camera_id:
+        raise HTTPException(
+            status_code=422,
+            detail="Camera ID is required",
+        )
+    if not name:
+        raise HTTPException(
+            status_code=422,
+            detail="Camera name is required",
+        )
+    if not location:
+        raise HTTPException(
+            status_code=422,
+            detail="Camera location is required",
+        )
+    if not source:
+        raise HTTPException(
+            status_code=422,
+            detail="Camera source is required",
+        )
+
+    database = CameraDatabase()
+    audit_database = AuditDatabase()
+
+    try:
+        try:
+            database.create_camera(
+                camera_id=camera_id,
+                name=name,
+                location=location,
+                source_type=request.source_type,
+                source=source,
+                ai_fps=request.ai_fps,
+                reconnect_max_attempts=(
+                    request.reconnect.max_attempts
+                ),
+                reconnect_delay_seconds=(
+                    request.reconnect.delay_seconds
+                ),
+            )
+        except sqlite3.IntegrityError as error:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Camera {camera_id} already exists.",
+            ) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail=str(error),
+            ) from error
+
+        # Do not write raw source URLs into audit logs because an RTSP
+        # URL can contain embedded credentials.
+        audit_database.create_log(
+            action="CAMERA_CREATED",
+            entity_type="camera",
+            entity_id=camera_id,
+            actor=current_user["username"],
+            details=json.dumps(
+                {
+                    "name": name,
+                    "location": location,
+                    "source_type": request.source_type,
+                    "source_configured": True,
+                    "ai_fps": request.ai_fps,
+                    "reconnect": {
+                        "max_attempts": (
+                            request.reconnect.max_attempts
+                        ),
+                        "delay_seconds": (
+                            request.reconnect.delay_seconds
+                        ),
+                    },
+                },
+                sort_keys=True,
+            ),
+        )
+
+        return {
+            "message": "Camera created",
+            "runner_reload_required": True,
+            "camera": serialize_camera(
+                database.get_camera(camera_id)
+            ),
+        }
+    finally:
+        database.close()
+        audit_database.close()
+
+
+@app.put("/cameras/{camera_id}")
+def update_camera(
+    camera_id: str,
+    request: CameraUpdateRequest,
+    current_user: dict = Depends(
+        require_roles("ADMIN")
+    ),
+):
+    camera_id = camera_id.strip()
+    name = request.name.strip()
+    location = request.location.strip()
+    source = request.source.strip()
+
+    if not camera_id:
+        raise HTTPException(
+            status_code=422,
+            detail="Camera ID is required",
+        )
+    if not name:
+        raise HTTPException(
+            status_code=422,
+            detail="Camera name is required",
+        )
+    if not location:
+        raise HTTPException(
+            status_code=422,
+            detail="Camera location is required",
+        )
+    if not source:
+        raise HTTPException(
+            status_code=422,
+            detail="Camera source is required",
+        )
+
+    database = CameraDatabase()
+    audit_database = AuditDatabase()
+
+    try:
+        existing = database.get_camera(camera_id)
+        if existing is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Camera {camera_id} not found",
+            )
+
+        previous = {
+            "name": existing["name"],
+            "location": existing["location"],
+            "source_type": existing["source_type"],
+            "source_configured": bool(
+                str(existing["source"] or "").strip()
+            ),
+            "ai_fps": existing["ai_fps"],
+            "reconnect": {
+                "max_attempts": (
+                    existing["reconnect_max_attempts"]
+                ),
+                "delay_seconds": (
+                    existing["reconnect_delay_seconds"]
+                ),
+            },
+        }
+
+        try:
+            database.update_camera_configuration(
+                camera_id=camera_id,
+                name=name,
+                location=location,
+                source_type=request.source_type,
+                source=source,
+                ai_fps=request.ai_fps,
+                reconnect_max_attempts=(
+                    request.reconnect.max_attempts
+                ),
+                reconnect_delay_seconds=(
+                    request.reconnect.delay_seconds
+                ),
+            )
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail=str(error),
+            ) from error
+
+        audit_database.create_log(
+            action="CAMERA_UPDATED",
+            entity_type="camera",
+            entity_id=camera_id,
+            actor=current_user["username"],
+            details=json.dumps(
+                {
+                    "before": previous,
+                    "after": {
+                        "name": name,
+                        "location": location,
+                        "source_type": request.source_type,
+                        "source_configured": True,
+                        "ai_fps": request.ai_fps,
+                        "reconnect": {
+                            "max_attempts": (
+                                request.reconnect.max_attempts
+                            ),
+                            "delay_seconds": (
+                                request.reconnect.delay_seconds
+                            ),
+                        },
+                    },
+                },
+                sort_keys=True,
+            ),
+        )
+
+        return {
+            "message": "Camera updated",
+            "runner_reload_required": True,
+            "camera": serialize_camera(
+                database.get_camera(camera_id)
+            ),
+        }
+    finally:
+        database.close()
+        audit_database.close()
+
+
+@app.delete("/cameras/{camera_id}")
+def delete_camera(
+    camera_id: str,
+    current_user: dict = Depends(
+        require_roles("ADMIN")
+    ),
+):
+    camera_id = camera_id.strip()
+    database = CameraDatabase()
+    audit_database = AuditDatabase()
+
+    try:
+        existing = database.get_camera(camera_id)
+        if existing is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Camera {camera_id} not found",
+            )
+
+        snapshot = {
+            "name": existing["name"],
+            "location": existing["location"],
+            "source_type": existing["source_type"],
+            "source_configured": bool(
+                str(existing["source"] or "").strip()
+            ),
+            "ai_fps": existing["ai_fps"],
+            "reconnect": {
+                "max_attempts": (
+                    existing["reconnect_max_attempts"]
+                ),
+                "delay_seconds": (
+                    existing["reconnect_delay_seconds"]
+                ),
+            },
+        }
+
+        try:
+            database.delete_camera(camera_id)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=404,
+                detail=str(error),
+            ) from error
+
+        audit_database.create_log(
+            action="CAMERA_DELETED",
+            entity_type="camera",
+            entity_id=camera_id,
+            actor=current_user["username"],
+            details=json.dumps(
+                snapshot,
+                sort_keys=True,
+            ),
+        )
+
+        return {
+            "message": "Camera deleted",
+            "runner_reload_required": True,
+            "camera_id": camera_id,
+        }
+    finally:
+        database.close()
+        audit_database.close()
+
+
 @app.get("/cameras/{camera_id}")
 def get_camera(
     camera_id: str,
@@ -236,7 +583,7 @@ def get_camera(
                 detail=f"Camera {camera_id} not found",
             )
 
-        return dict(camera)
+        return serialize_camera(camera)
 
     finally:
         database.close()
