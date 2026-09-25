@@ -1,0 +1,7 @@
+{
+  "crowding": {
+    "enabled": true,
+    "minimum_people": 5,
+    "persistence_frames": 3
+  }
+}
