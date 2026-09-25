@@ -34,6 +34,7 @@ from notifications.providers import ConsoleNotificationProvider
 
 from rules.intrusion_rules import IntrusionRule
 from rules.crowding_rules import CrowdingRule
+from rules.after_hours_rules import AfterHoursRule
 
 from video.camera_config import load_camera_configs
 from video.frame_sampler import FrameSampler
@@ -59,6 +60,7 @@ CAMERA_FAILURE_THRESHOLD = 3
 CAMERA_HEALTH_MODEL_VERSION = "camera-health-v1"
 INTRUSION_MODEL_VERSION = "prototype-v1"
 CROWDING_MODEL_VERSION = "crowding-rule-v1"
+AFTER_HOURS_MODEL_VERSION = "after-hours-rule-v1"
 FALL_MODEL_VERSION = "fall-heuristic-v1"
 FIRE_SMOKE_MODEL_PATH = Path("data/models/fire_smoke/cctv_yolov8n/best.onnx")
 FIRE_SMOKE_MODEL_VERSION = "fire-smoke-event-v1"
@@ -106,6 +108,8 @@ def get_event_model_version(event_type):
         return WEAPON_MODEL_VERSION
     if event_type == "CROWDING":
         return CROWDING_MODEL_VERSION
+    if event_type == "AFTER_HOURS":
+        return AFTER_HOURS_MODEL_VERSION
     return INTRUSION_MODEL_VERSION
 
 
@@ -202,6 +206,8 @@ def process_camera(
     weapon_detection_provider=None,
     weapon_event_processor=None,
     crowding_config=None,
+    after_hours_config=None,
+    after_hours_now_provider=None,
 ):
     """
     Process one configured camera from the shared CameraManager.
@@ -262,6 +268,21 @@ def process_camera(
         crowding_rule = CrowdingRule(
             minimum_people=int(crowding_config.get("minimum_people", 5)),
             persistence_frames=int(crowding_config.get("persistence_frames", 3)),
+        )
+
+    after_hours_rule = None
+    if after_hours_config is not None and after_hours_config.get(
+        "enabled",
+        False,
+    ):
+        after_hours_rule = AfterHoursRule(
+            camera_id=camera_id,
+            config=after_hours_config,
+            available_zone_ids={
+                str(zone["zone_id"])
+                for zone in zones
+            },
+            now_provider=after_hours_now_provider,
         )
 
     camera_health = CameraHealthMonitor(
@@ -705,6 +726,17 @@ def process_camera(
                     crowding_events = crowding_rule.evaluate(tracks)
 
                 # --------------------------------------------
+                # After-hours presence rule
+                # --------------------------------------------
+
+                after_hours_events = []
+                if after_hours_rule is not None:
+                    after_hours_events = after_hours_rule.evaluate(
+                        tracks,
+                        zone_results,
+                    )
+
+                # --------------------------------------------
                 # Fall / person-down analysis
                 # --------------------------------------------
 
@@ -753,6 +785,7 @@ def process_camera(
                 events = (
                     intrusion_events
                     + crowding_events
+                    + after_hours_events
                     + fall_events
                     + fire_smoke_events
                     + weapon_events
@@ -1012,6 +1045,8 @@ def process_camera(
 
                     if event["event_type"] == "CROWDING":
                         alert_text = "!!! CROWDING DETECTED !!!"
+                    elif event["event_type"] == "AFTER_HOURS":
+                        alert_text = "!!! AFTER-HOURS PRESENCE DETECTED !!!"
                     elif event["event_type"] == "FALL":
                         alert_text = "!!! FALL / PERSON DOWN DETECTED !!!"
                     else:
@@ -1199,6 +1234,8 @@ def process_camera_worker(
     weapon_detection_provider=None,
     weapon_event_processor=None,
     crowding_config=None,
+    after_hours_config=None,
+    after_hours_now_provider=None,
 ):
     """
     Process one camera inside a worker thread.
@@ -1246,6 +1283,8 @@ def process_camera_worker(
                 weapon_event_processor
             ),
             crowding_config=crowding_config,
+            after_hours_config=after_hours_config,
+            after_hours_now_provider=after_hours_now_provider,
         )
 
     finally:
@@ -1435,7 +1474,12 @@ def main():
         if not isinstance(crowding_config, dict):
             raise ValueError("'crowding' rule configuration must be an object.")
 
+        after_hours_config = rule_config.get("after_hours", {})
+        if not isinstance(after_hours_config, dict):
+            raise ValueError("'after_hours' rule configuration must be an object.")
+
         print(f"Crowding rule configuration: {crowding_config}")
+        print(f"After-hours rule configuration: {after_hours_config}")
 
         zone_detector = ZoneDetector(
             zones
@@ -1637,6 +1681,7 @@ def main():
                         else None
                     ),
                     crowding_config=crowding_config,
+                    after_hours_config=after_hours_config,
                 )
 
             worker_results = worker_pool.run(
