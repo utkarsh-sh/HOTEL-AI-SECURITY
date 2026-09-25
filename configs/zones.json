@@ -2,6 +2,7 @@
     "zones": [
         {
             "zone_id": "restricted_01",
+            "camera_id": "CAM-001",
             "name": "Restricted Area",
             "type": "restricted",
             "points": [
