@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from database.event_database import EventDatabase
 from database.camera_database import CameraDatabase
 from database.audit_database import AuditDatabase
+from database.zone_database import ZoneDatabase
 
 from backend.auth_service import (
     AuthService,
@@ -22,6 +23,10 @@ from backend.auth_jwt import create_access_token
 from backend.camera_schemas import (
     CameraCreateRequest,
     CameraUpdateRequest,
+)
+from backend.zone_schemas import (
+    ZoneCreateRequest,
+    ZoneUpdateRequest,
 )
 
 from backend.auth_dependencies import (
@@ -624,6 +629,330 @@ def get_camera_health(
     finally:
         database.close()
 
+
+
+# ============================================================
+# ZONES
+# ============================================================
+
+
+def _normalize_zone_request(
+    zone_id,
+    camera_id,
+    name,
+    zone_type,
+):
+    normalized_zone_id = str(zone_id).strip()
+    normalized_camera_id = str(camera_id).strip()
+    normalized_name = str(name).strip()
+    normalized_type = str(zone_type).strip()
+
+    if not normalized_zone_id:
+        raise HTTPException(
+            status_code=422,
+            detail="Zone ID is required",
+        )
+    if not normalized_camera_id:
+        raise HTTPException(
+            status_code=422,
+            detail="Zone camera ID is required",
+        )
+    if not normalized_name:
+        raise HTTPException(
+            status_code=422,
+            detail="Zone name is required",
+        )
+    if not normalized_type:
+        raise HTTPException(
+            status_code=422,
+            detail="Zone type is required",
+        )
+
+    return (
+        normalized_zone_id,
+        normalized_camera_id,
+        normalized_name,
+        normalized_type,
+    )
+
+
+def _serialize_zone(zone):
+    data = dict(zone)
+    data["points"] = [
+        [float(point[0]), float(point[1])]
+        for point in data["points"]
+    ]
+    return data
+
+
+@app.get("/zones")
+def get_zones(
+    current_user: dict = Depends(get_current_user),
+):
+    database = ZoneDatabase()
+
+    try:
+        zones = database.get_all_zones()
+        return {
+            "total": len(zones),
+            "zones": [
+                _serialize_zone(zone)
+                for zone in zones
+            ],
+        }
+    finally:
+        database.close()
+
+
+@app.get("/zones/{zone_id}")
+def get_zone(
+    zone_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    zone_id = zone_id.strip()
+
+    if not zone_id:
+        raise HTTPException(
+            status_code=422,
+            detail="Zone ID is required",
+        )
+
+    database = ZoneDatabase()
+
+    try:
+        zone = database.get_zone_data(zone_id)
+
+        if zone is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Zone {zone_id} not found",
+            )
+
+        return _serialize_zone(zone)
+    finally:
+        database.close()
+
+
+@app.post("/zones")
+def create_zone(
+    request: ZoneCreateRequest,
+    current_user: dict = Depends(require_roles("ADMIN")),
+):
+    (
+        zone_id,
+        camera_id,
+        name,
+        zone_type,
+    ) = _normalize_zone_request(
+        request.zone_id,
+        request.camera_id,
+        request.name,
+        request.type,
+    )
+
+    camera_database = CameraDatabase()
+    zone_database = ZoneDatabase()
+    audit_database = AuditDatabase()
+
+    try:
+        if camera_database.get_camera(camera_id) is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Camera {camera_id} not found",
+            )
+
+        if zone_database.get_zone(zone_id) is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Zone {zone_id} already exists.",
+            )
+
+        try:
+            zone_database.create_zone(
+                zone_id=zone_id,
+                camera_id=camera_id,
+                name=name,
+                zone_type=zone_type,
+                points=request.points,
+            )
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail=str(error),
+            ) from error
+        except sqlite3.IntegrityError as error:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Zone {zone_id} already exists.",
+            ) from error
+
+        audit_database.create_log(
+            action="ZONE_CREATED",
+            entity_type="zone",
+            entity_id=zone_id,
+            actor=current_user["username"],
+            details=json.dumps(
+                {
+                    "camera_id": camera_id,
+                    "name": name,
+                    "type": zone_type,
+                    "points": request.points,
+                },
+                sort_keys=True,
+            ),
+        )
+
+        return {
+            "message": "Zone created",
+            "runner_reload_required": True,
+            "zone": _serialize_zone(
+                zone_database.get_zone_data(zone_id)
+            ),
+        }
+    finally:
+        camera_database.close()
+        zone_database.close()
+        audit_database.close()
+
+
+@app.put("/zones/{zone_id}")
+def update_zone(
+    zone_id: str,
+    request: ZoneUpdateRequest,
+    current_user: dict = Depends(require_roles("ADMIN")),
+):
+    zone_id = zone_id.strip()
+
+    if not zone_id:
+        raise HTTPException(
+            status_code=422,
+            detail="Zone ID is required",
+        )
+
+    (
+        _,
+        camera_id,
+        name,
+        zone_type,
+    ) = _normalize_zone_request(
+        zone_id,
+        request.camera_id,
+        request.name,
+        request.type,
+    )
+
+    camera_database = CameraDatabase()
+    zone_database = ZoneDatabase()
+    audit_database = AuditDatabase()
+
+    try:
+        existing = zone_database.get_zone_data(zone_id)
+
+        if existing is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Zone {zone_id} not found",
+            )
+
+        if camera_database.get_camera(camera_id) is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Camera {camera_id} not found",
+            )
+
+        try:
+            zone_database.update_zone(
+                zone_id=zone_id,
+                camera_id=camera_id,
+                name=name,
+                zone_type=zone_type,
+                points=request.points,
+            )
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail=str(error),
+            ) from error
+
+        updated = zone_database.get_zone_data(zone_id)
+
+        audit_database.create_log(
+            action="ZONE_UPDATED",
+            entity_type="zone",
+            entity_id=zone_id,
+            actor=current_user["username"],
+            details=json.dumps(
+                {
+                    "before": existing,
+                    "after": updated,
+                },
+                sort_keys=True,
+            ),
+        )
+
+        return {
+            "message": "Zone updated",
+            "runner_reload_required": True,
+            "zone": _serialize_zone(updated),
+        }
+    finally:
+        camera_database.close()
+        zone_database.close()
+        audit_database.close()
+
+
+@app.delete("/zones/{zone_id}")
+def delete_zone(
+    zone_id: str,
+    current_user: dict = Depends(require_roles("ADMIN")),
+):
+    zone_id = zone_id.strip()
+
+    if not zone_id:
+        raise HTTPException(
+            status_code=422,
+            detail="Zone ID is required",
+        )
+
+    zone_database = ZoneDatabase()
+    audit_database = AuditDatabase()
+
+    try:
+        existing = zone_database.get_zone_data(zone_id)
+
+        if existing is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Zone {zone_id} not found",
+            )
+
+        try:
+            zone_database.delete_zone(zone_id)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=404,
+                detail=str(error),
+            ) from error
+
+        audit_database.create_log(
+            action="ZONE_DELETED",
+            entity_type="zone",
+            entity_id=zone_id,
+            actor=current_user["username"],
+            details=json.dumps(
+                existing,
+                sort_keys=True,
+            ),
+        )
+
+        return {
+            "message": "Zone deleted",
+            "runner_reload_required": True,
+            "zone_id": zone_id,
+        }
+    finally:
+        zone_database.close()
+        audit_database.close()
 
 # ============================================================
 # EVENTS

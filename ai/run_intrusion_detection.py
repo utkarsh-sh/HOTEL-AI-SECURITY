@@ -32,6 +32,10 @@ from database.camera_database import (
     BOOTSTRAP_METADATA_KEY,
     CameraDatabase,
 )
+from database.zone_database import (
+    ZONE_BOOTSTRAP_METADATA_KEY,
+    ZoneDatabase,
+)
 from notifications.dispatcher import NotificationDispatcher
 from notifications.providers import ConsoleNotificationProvider
 
@@ -79,7 +83,7 @@ RULES_CONFIG_PATH = "configs/rules.json"
 # ============================================================
 
 def load_zones(path):
-    """Load configured security zones from JSON."""
+    """Load configured security zones from JSON for bootstrap."""
 
     with open(
         path,
@@ -88,7 +92,23 @@ def load_zones(path):
     ) as file:
         config = json.load(file)
 
-    return config["zones"]
+    zones = config.get("zones")
+    if not isinstance(zones, list):
+        raise ValueError("'zones' must be a list.")
+
+    return zones
+
+
+def load_runtime_zones(zone_database, path):
+    """Load DB-authoritative zones, bootstrapping JSON once."""
+    if zone_database.get_metadata(
+        ZONE_BOOTSTRAP_METADATA_KEY
+    ) != "1":
+        zone_database.initialize_from_bootstrap(
+            load_zones(path)
+        )
+
+    return zone_database.get_all_zones()
 
 
 def load_rule_config(path):
@@ -1314,7 +1334,9 @@ def main():
 
     camera_manager = None
     camera_database = None
+    zone_database = None
     event_database = None
+    zone_database = None
     notification_dispatcher = None
     weapon_adapter = None
     fire_smoke_adapter = None
@@ -1494,8 +1516,13 @@ def main():
                 "(set ENABLE_WEAPON=1 to enable)."
             )
 
-        zones = load_zones(
-            ZONE_PATH
+        zone_database = ZoneDatabase(
+            "database/hotel_security.db"
+        )
+
+        zones = load_runtime_zones(
+            zone_database,
+            ZONE_PATH,
         )
 
         rule_config = load_rule_config(RULES_CONFIG_PATH)
@@ -1841,6 +1868,24 @@ def main():
                     f"[CLEANUP WARNING] "
                     f"Camera={camera_id} "
                     f"Video source release failed: "
+                    f"{error}"
+                )
+
+        # ----------------------------------------------------
+        # Close zone database
+        # ----------------------------------------------------
+
+        if zone_database is not None:
+
+            try:
+
+                zone_database.close()
+
+            except Exception as error:
+
+                print(
+                    f"[CLEANUP WARNING] "
+                    f"Zone database close failed: "
                     f"{error}"
                 )
 
