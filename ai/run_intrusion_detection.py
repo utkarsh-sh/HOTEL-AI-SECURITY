@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import cv2
@@ -8,6 +9,13 @@ from ai.person_detector import PersonDetector
 from ai.tracker import PersonTracker
 from ai.fall_event_processor import FallEventProcessor
 from ai.fire_smoke_event_processor import FireSmokeEventProcessor
+from ai.fire_smoke_vision_adapter import FireSmokeVisionAdapter
+from ai.weapon_event_processor import WeaponEventProcessor
+from ai.weapon_vision_adapter import (
+    WEAPON_MODEL_SHA256,
+    WEAPON_MODEL_VERSION,
+    WeaponVisionAdapter,
+)
 from ai.zone_detector import ZoneDetector
 from ai.camera_health import (
     CameraHealthMonitor,
@@ -50,7 +58,9 @@ CAMERA_FAILURE_THRESHOLD = 3
 CAMERA_HEALTH_MODEL_VERSION = "camera-health-v1"
 INTRUSION_MODEL_VERSION = "prototype-v1"
 FALL_MODEL_VERSION = "fall-heuristic-v1"
+FIRE_SMOKE_MODEL_PATH = Path("data/models/fire_smoke/cctv_yolov8n/best.onnx")
 FIRE_SMOKE_MODEL_VERSION = "fire-smoke-event-v1"
+WEAPON_MODEL_PATH = Path("data/models/weapon/gun-knife-yolo11n/best.onnx")
 
 
 # ============================================================
@@ -160,6 +170,8 @@ def process_camera(
     notification_dispatcher,
     fire_smoke_detection_provider=None,
     fire_smoke_event_processor=None,
+    weapon_detection_provider=None,
+    weapon_event_processor=None,
 ):
     """
     Process one configured camera from the shared CameraManager.
@@ -205,6 +217,14 @@ def process_camera(
             persistence_frames=3,
             min_confidence=0.50,
             region_tolerance=75.0,
+        )
+
+    if weapon_event_processor is None:
+        weapon_event_processor = WeaponEventProcessor(
+            persistence_frames=3,
+            min_confidence=0.50,
+            region_tolerance=75.0,
+            track_association_tolerance=100.0,
         )
 
     camera_health = CameraHealthMonitor(
@@ -667,6 +687,21 @@ def process_camera(
                         )
                     )
 
+                # --------------------------------------------
+                # Weapon analysis
+                # --------------------------------------------
+
+                weapon_events = []
+
+                if weapon_detection_provider is not None:
+                    weapon_detections = weapon_detection_provider(
+                        frame
+                    )
+                    weapon_events = weapon_event_processor.evaluate(
+                        weapon_detections,
+                        tracks,
+                    )
+
                 # All event types use the same downstream
                 # persistence, evidence, database, and
                 # notification pipeline.
@@ -674,6 +709,7 @@ def process_camera(
                     intrusion_events
                     + fall_events
                     + fire_smoke_events
+                    + weapon_events
                 )
 
                 # --------------------------------------------
@@ -794,7 +830,11 @@ def process_camera(
                                     FIRE_SMOKE_MODEL_VERSION
                                     if event["event_type"]
                                     in {"FIRE", "SMOKE"}
-                                    else INTRUSION_MODEL_VERSION
+                                    else (
+                                        WEAPON_MODEL_VERSION
+                                        if event["event_type"] == "WEAPON"
+                                        else INTRUSION_MODEL_VERSION
+                                    )
                                 )
                             ),
                             evidence_path=None,
@@ -1119,6 +1159,8 @@ def process_camera_worker(
     notification_dispatcher=None,
     fire_smoke_detection_provider=None,
     fire_smoke_event_processor=None,
+    weapon_detection_provider=None,
+    weapon_event_processor=None,
 ):
     """
     Process one camera inside a worker thread.
@@ -1159,6 +1201,12 @@ def process_camera_worker(
             fire_smoke_event_processor=(
                 fire_smoke_event_processor
             ),
+            weapon_detection_provider=(
+                weapon_detection_provider
+            ),
+            weapon_event_processor=(
+                weapon_event_processor
+            ),
         )
 
     finally:
@@ -1184,6 +1232,8 @@ def main():
     camera_database = None
     event_database = None
     notification_dispatcher = None
+    weapon_adapter = None
+    fire_smoke_adapter = None
 
     results = []
 
@@ -1225,6 +1275,117 @@ def main():
         # ----------------------------------------------------
 
         detector = PersonDetector()
+
+        # ------------------------------------------------
+        # Optional shared Fire/Smoke vision adapter.
+        #
+        # The ONNX model/session is shared across cameras.
+        # FireSmokeEventProcessor remains camera-local because
+        # it contains temporal persistence state.
+        #
+        # Explicit opt-in prevents the prototype model from
+        # becoming active accidentally in deployments where
+        # commercial licensing has not yet been cleared.
+        # ------------------------------------------------
+
+        enable_fire_smoke = (
+            os.environ.get(
+                "ENABLE_FIRE_SMOKE",
+                "0",
+            ).strip().lower()
+            in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+        )
+
+        if enable_fire_smoke:
+
+            if not FIRE_SMOKE_MODEL_PATH.exists():
+                raise RuntimeError(
+                    "Fire/Smoke model not found: "
+                    f"{FIRE_SMOKE_MODEL_PATH}"
+                )
+
+            fire_smoke_adapter = FireSmokeVisionAdapter(
+                model_path=FIRE_SMOKE_MODEL_PATH,
+                confidence_threshold=0.50,
+            )
+
+            providers = (
+                fire_smoke_adapter.session.get_providers()
+                if fire_smoke_adapter.session is not None
+                else []
+            )
+
+            print(
+                "Fire/Smoke adapter enabled."
+            )
+
+            print(
+                f"Fire/Smoke model: "
+                f"{FIRE_SMOKE_MODEL_PATH}"
+            )
+
+            print(
+                f"Fire/Smoke providers: "
+                f"{providers}"
+            )
+
+            if (
+                "CUDAExecutionProvider"
+                not in providers
+            ):
+                raise RuntimeError(
+                    "Fire/Smoke adapter did not initialize "
+                    "with CUDAExecutionProvider."
+                )
+
+        else:
+
+            print(
+                "Fire/Smoke adapter disabled "
+                "(set ENABLE_FIRE_SMOKE=1 to enable)."
+            )
+
+        # ------------------------------------------------
+        # ------------------------------------------------
+        # Optional shared ONNX weapon adapter.
+        # Activation is explicit and hash-pinned.
+        # ------------------------------------------------
+
+        enable_weapon = (
+            os.environ.get("ENABLE_WEAPON", "0").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+
+        if enable_weapon:
+            if not WEAPON_MODEL_PATH.exists():
+                raise RuntimeError(
+                    "Weapon model not found: "
+                    f"{WEAPON_MODEL_PATH}"
+                )
+
+            weapon_adapter = WeaponVisionAdapter(
+                model_path=WEAPON_MODEL_PATH,
+                confidence_threshold=0.50,
+                expected_sha256=WEAPON_MODEL_SHA256,
+            )
+
+            print("Weapon adapter enabled.")
+            print(f"Weapon model: {WEAPON_MODEL_PATH}")
+            print(
+                f"Weapon providers: "
+                f"{weapon_adapter.execution_providers}"
+            )
+            print(f"Weapon model version: {WEAPON_MODEL_VERSION}")
+        else:
+            print(
+                "Weapon adapter disabled "
+                "(set ENABLE_WEAPON=1 to enable)."
+            )
 
         zones = load_zones(
             ZONE_PATH
@@ -1419,6 +1580,16 @@ def main():
                     zones=zones,
                     zone_detector=zone_detector,
                     notification_dispatcher=notification_dispatcher,
+                    weapon_detection_provider=(
+                        weapon_adapter.detect
+                        if weapon_adapter is not None
+                        else None
+                    ),
+                    fire_smoke_detection_provider=(
+                        fire_smoke_adapter.detect
+                        if fire_smoke_adapter is not None
+                        else None
+                    ),
                 )
 
             worker_results = worker_pool.run(
@@ -1499,6 +1670,41 @@ def main():
                     f"[CLEANUP WARNING] "
                     f"Notification dispatcher shutdown failed: "
                     f"{error}"
+                )
+
+        # ----------------------------------------------------
+        # Close shared Fire/Smoke ONNX Runtime session
+        # ----------------------------------------------------
+
+        if fire_smoke_adapter is not None:
+
+            try:
+
+                fire_smoke_adapter.close()
+
+                print(
+                    "Fire/Smoke adapter shut down cleanly."
+                )
+
+            except Exception as error:
+
+                print(
+                    f"[CLEANUP WARNING] "
+                    f"Fire/Smoke adapter shutdown failed: "
+                    f"{error}"
+                )
+
+        # ----------------------------------------------------
+        # Close shared weapon model resources
+        # ----------------------------------------------------
+
+        if weapon_adapter is not None:
+            try:
+                weapon_adapter.close()
+                print("Weapon adapter shut down cleanly.")
+            except Exception as error:
+                print(
+                    f"[CLEANUP WARNING] Weapon adapter shutdown failed: {error}"
                 )
 
         # ----------------------------------------------------

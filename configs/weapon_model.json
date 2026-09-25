@@ -1,0 +1,23 @@
+﻿{
+  "model_version": "weapon-yolo11n-gun-knife-v1",
+  "artifact_path": "data/models/weapon/gun-knife-yolo11n/best.onnx",
+  "artifact_sha256": "ba7466e4036db5aa86189a59125a42c0e64de254e9d89429c09082f45d99ec6d",
+  "classes": {
+    "0": "gun",
+    "1": "knife"
+  },
+  "input_size": 640,
+  "confidence_threshold": 0.50,
+  "runtime": "onnxruntime",
+  "preferred_execution_provider": "CUDAExecutionProvider",
+  "fallback_execution_provider": "CPUExecutionProvider",
+  "source_model": "cosgun99/gun-knife-yolo11n",
+  "source_revision": "572728ceaad5f1b5e3344da0a98e043749c49427",
+  "export": {
+    "format": "onnx",
+    "opset": 17,
+    "nms": true,
+    "dynamic": false,
+    "simplify": true
+  }
+}
