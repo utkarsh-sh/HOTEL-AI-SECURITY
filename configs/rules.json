@@ -3,5 +3,24 @@
     "enabled": true,
     "minimum_people": 5,
     "persistence_frames": 3
+  },
+  "after_hours": {
+    "enabled": false,
+    "timezone": "Asia/Kolkata",
+    "persistence_frames": 3,
+    "severity": "HIGH",
+    "default_schedule": {
+      "working_days": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "start": "09:00",
+      "end": "18:00",
+      "zone_ids": []
+    },
+    "cameras": {}
   }
 }
