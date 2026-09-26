@@ -4,17 +4,34 @@ from datetime import datetime, timedelta, timezone
 import jwt
 
 
-JWT_SECRET_KEY = os.getenv(
-    "HOTEL_SECURITY_JWT_SECRET",
-    "development-only-change-this-secret",
-)
-
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
+MIN_JWT_SECRET_LENGTH = 32
 
 
 class JWTError(Exception):
     """Raised when a JWT is invalid or expired."""
+
+
+class JWTConfigurationError(RuntimeError):
+    """Raised when JWT security configuration is invalid."""
+
+
+def _get_jwt_secret() -> str:
+    secret = os.getenv("HOTEL_SECURITY_JWT_SECRET")
+
+    if not secret:
+        raise JWTConfigurationError(
+            "HOTEL_SECURITY_JWT_SECRET is not configured."
+        )
+
+    if len(secret) < MIN_JWT_SECRET_LENGTH:
+        raise JWTConfigurationError(
+            "HOTEL_SECURITY_JWT_SECRET must be at least "
+            f"{MIN_JWT_SECRET_LENGTH} characters long."
+        )
+
+    return secret
 
 
 def create_access_token(user: dict) -> str:
@@ -34,7 +51,7 @@ def create_access_token(user: dict) -> str:
 
     return jwt.encode(
         payload,
-        JWT_SECRET_KEY,
+        _get_jwt_secret(),
         algorithm=JWT_ALGORITHM,
     )
 
@@ -43,7 +60,7 @@ def decode_access_token(token: str) -> dict:
     try:
         payload = jwt.decode(
             token,
-            JWT_SECRET_KEY,
+            _get_jwt_secret(),
             algorithms=[JWT_ALGORITHM],
         )
 
