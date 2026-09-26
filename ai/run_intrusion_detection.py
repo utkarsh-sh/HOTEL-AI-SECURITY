@@ -1,5 +1,6 @@
-import json
+﻿import json
 import os
+import time
 from pathlib import Path
 
 import cv2
@@ -37,6 +38,7 @@ from database.zone_database import (
     ZoneDatabase,
 )
 from notifications.dispatcher import NotificationDispatcher
+from evaluation.latency import LatencyMeasurement
 from notifications.providers import ConsoleNotificationProvider
 
 from rules.intrusion_rules import IntrusionRule
@@ -258,6 +260,7 @@ def process_camera(
     total_events = 0
     output_path = None
     camera_error = None
+    latency_measurement = LatencyMeasurement()
 
     # --------------------------------------------------------
     # Per-camera stateful components
@@ -655,7 +658,7 @@ def process_camera(
             # ------------------------------------------------
             # Valid frame received
             # ------------------------------------------------
-
+            frame_received_at = time.perf_counter()
             previous_failure_count = (
                 camera_health.get_failure_count()
             )
@@ -817,6 +820,8 @@ def process_camera(
                     + weapon_events
                 )
 
+                ai_completed_at = time.perf_counter()
+
                 # --------------------------------------------
                 # Draw zones
                 # --------------------------------------------
@@ -935,6 +940,8 @@ def process_camera(
                         )
                     )
 
+                    persisted_at = time.perf_counter()
+
                     # ----------------------------------------
                     # Start evidence capture
                     # ----------------------------------------
@@ -1015,6 +1022,16 @@ def process_camera(
                                     f"{event['message']}"
                                 ),
                             )
+                        )
+
+                        notification_queued_at = time.perf_counter()
+
+                        latency_measurement.record(
+                            event_type=event["event_type"],
+                            frame_received_at=frame_received_at,
+                            ai_completed_at=ai_completed_at,
+                            persisted_at=persisted_at,
+                            notification_queued_at=notification_queued_at,
                         )
 
                         print(
@@ -1241,6 +1258,7 @@ def process_camera(
         "events": total_events,
         "output_path": output_path,
         "error": camera_error,
+        "latency": latency_measurement.to_dict(),
     }
 
 
@@ -1262,6 +1280,7 @@ def process_camera_worker(
     crowding_config=None,
     after_hours_config=None,
     after_hours_now_provider=None,
+    database_path="database/hotel_security.db",
 ):
     """
     Process one camera inside a worker thread.
@@ -1275,11 +1294,11 @@ def process_camera_worker(
 
     try:
         event_database = EventDatabase(
-            "database/hotel_security.db"
+            database_path
         )
 
         camera_database = CameraDatabase(
-            "database/hotel_security.db"
+            database_path
         )
 
         camera_health_events = CameraHealthEventService(

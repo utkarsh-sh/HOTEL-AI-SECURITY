@@ -220,6 +220,16 @@ def test_after_hours_event_reaches_full_runner_pipeline(
     assert result["ai_frames"] == 3
     assert result["events"] == 1
 
+    latency = result["latency"]
+    assert latency["overall"]["count"] == 1
+    assert latency["overall"]["mean_ms"] is not None
+    assert latency["overall"]["median_ms"] is not None
+    assert latency["overall"]["p95_ms"] is not None
+    assert latency["overall"]["max_ms"] is not None
+
+    assert "AFTER_HOURS" in latency["by_event_type"]
+    assert latency["by_event_type"]["AFTER_HOURS"]["count"] == 1
+
     events = database.get_all_events()
     assert len(events) == 1
 
