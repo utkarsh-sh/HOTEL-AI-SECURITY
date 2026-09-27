@@ -1,4 +1,5 @@
-﻿from collections import Counter
+from collections import Counter
+from datetime import datetime
 import json
 from pathlib import Path
 
@@ -36,6 +37,79 @@ def _count_values(rows, field):
             ).items()
         )
     )
+
+
+def _calculate_acknowledgement_metrics(event_rows):
+    durations_ms = []
+
+    for row in event_rows:
+        acknowledged_at = row.get("acknowledged_at")
+        if not acknowledged_at:
+            continue
+
+        event_timestamp = row.get("timestamp")
+        if not event_timestamp:
+            continue
+
+        event_time = datetime.fromisoformat(event_timestamp)
+        acknowledged_time = datetime.fromisoformat(acknowledged_at)
+
+        if event_time.tzinfo is None or acknowledged_time.tzinfo is None:
+            raise ValueError(
+                "event acknowledgement timestamps must be timezone-aware"
+            )
+
+        duration_ms = (
+            acknowledged_time - event_time
+        ).total_seconds() * 1000.0
+
+        if duration_ms < 0:
+            raise ValueError(
+                "acknowledged_at cannot be earlier than event timestamp"
+            )
+
+        durations_ms.append(duration_ms)
+
+    acknowledged_events = len(durations_ms)
+    unacknowledged_events = len(event_rows) - acknowledged_events
+
+    if not durations_ms:
+        return {
+            "acknowledged_events": 0,
+            "unacknowledged_events": unacknowledged_events,
+            "mean_ms": None,
+            "median_ms": None,
+            "p95_ms": None,
+            "max_ms": None,
+        }
+
+    ordered = sorted(durations_ms)
+
+    def percentile(values, percentile_value):
+        if len(values) == 1:
+            return values[0]
+
+        position = (len(values) - 1) * percentile_value
+        lower = int(position)
+        upper = lower + 1
+
+        if upper >= len(values):
+            return values[-1]
+
+        fraction = position - lower
+        return (
+            values[lower]
+            + (values[upper] - values[lower]) * fraction
+        )
+
+    return {
+        "acknowledged_events": acknowledged_events,
+        "unacknowledged_events": unacknowledged_events,
+        "mean_ms": sum(durations_ms) / len(durations_ms),
+        "median_ms": percentile(ordered, 0.50),
+        "p95_ms": percentile(ordered, 0.95),
+        "max_ms": max(durations_ms),
+    }
 
 
 def generate_weekly_operational_report(
@@ -160,9 +234,13 @@ def generate_weekly_operational_report(
         ),
     }
 
+    acknowledgement_metrics = _calculate_acknowledgement_metrics(
+        event_rows
+    )
+
     report = {
         "report_type": "weekly_operational",
-        "report_version": "1.0",
+        "report_version": "1.1",
         "period": {
             "start_time": start_iso,
             "end_time": end_iso,
@@ -177,6 +255,7 @@ def generate_weekly_operational_report(
                 notification_rows,
                 "status",
             ),
+            "acknowledgement": acknowledgement_metrics,
         },
         "audit": {
             "total": len(audit_rows),

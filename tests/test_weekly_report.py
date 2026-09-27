@@ -1,4 +1,4 @@
-﻿import json
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -65,9 +65,10 @@ def test_weekly_report_aggregates_period_data(tmp_path):
                 model_version,
                 workflow_version,
                 evidence_path,
-                created_at
+                created_at,
+                acknowledged_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "INTRUSION",
@@ -83,6 +84,7 @@ def test_weekly_report_aggregates_period_data(tmp_path):
                 "test-workflow",
                 None,
                 _timestamp(30),
+                _timestamp(32),
             ),
         )
 
@@ -101,9 +103,10 @@ def test_weekly_report_aggregates_period_data(tmp_path):
                 model_version,
                 workflow_version,
                 evidence_path,
-                created_at
+                created_at,
+                acknowledged_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "CROWDING",
@@ -119,6 +122,7 @@ def test_weekly_report_aggregates_period_data(tmp_path):
                 "test-workflow",
                 None,
                 _timestamp(60),
+                None,
             ),
         )
 
@@ -137,9 +141,10 @@ def test_weekly_report_aggregates_period_data(tmp_path):
                 model_version,
                 workflow_version,
                 evidence_path,
-                created_at
+                created_at,
+                acknowledged_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "FIRE",
@@ -155,6 +160,7 @@ def test_weekly_report_aggregates_period_data(tmp_path):
                 "test-workflow",
                 None,
                 _timestamp(180),
+                None,
             ),
         )
 
@@ -373,7 +379,7 @@ def test_weekly_report_aggregates_period_data(tmp_path):
         assert written_report == report
 
         assert report["report_type"] == "weekly_operational"
-        assert report["report_version"] == "1.0"
+        assert report["report_version"] == "1.1"
 
         assert report["period"]["start_time"] == start
         assert report["period"]["end_time"] == end
@@ -405,6 +411,15 @@ def test_weekly_report_aggregates_period_data(tmp_path):
         assert report["notifications"]["by_status"] == {
             "FAILED": 1,
             "SENT": 1,
+        }
+
+        assert report["notifications"]["acknowledgement"] == {
+            "acknowledged_events": 1,
+            "unacknowledged_events": 1,
+            "mean_ms": 120000.0,
+            "median_ms": 120000.0,
+            "p95_ms": 120000.0,
+            "max_ms": 120000.0,
         }
 
         assert report["audit"]["total"] == 2
