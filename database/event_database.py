@@ -266,6 +266,43 @@ class EventDatabase:
         return cursor.fetchall()
 
     # ==========================================================
+    # EVENT QUERY
+    # ==========================================================
+
+    def get_events_in_window(
+        self,
+        start_time=None,
+        end_time=None,
+    ):
+        """Return events within an optional timestamp window."""
+
+        query = """
+            SELECT *
+            FROM events
+        """
+
+        parameters = []
+        conditions = []
+
+        if start_time is not None:
+            conditions.append("timestamp >= ?")
+            parameters.append(start_time)
+
+        if end_time is not None:
+            conditions.append("timestamp <= ?")
+            parameters.append(end_time)
+
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+
+        query += " ORDER BY timestamp ASC, id ASC"
+
+        return self.connection.execute(
+            query,
+            parameters,
+        ).fetchall()
+
+    # ==========================================================
     # EVENT QUALITY METRICS
     # ==========================================================
 
@@ -346,6 +383,101 @@ class EventDatabase:
             ),
         }
 
+    def get_event_quality_metrics_in_window(
+        self,
+        start_time=None,
+        end_time=None,
+    ):
+        """
+        Return operator feedback metrics for events in a time window.
+
+        The false-positive rate uses only completed operator reviews:
+
+            FALSE_POSITIVE
+            -------------------------------
+            FALSE_POSITIVE + RESOLVED
+
+        Unreviewed events are excluded from the denominator.
+        """
+
+        query = """
+            SELECT
+                COUNT(*) AS total_events,
+                SUM(
+                    CASE
+                        WHEN status = 'FALSE_POSITIVE'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS false_positive_events,
+                SUM(
+                    CASE
+                        WHEN status = 'RESOLVED'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS resolved_events
+            FROM events
+        """
+
+        parameters = []
+        conditions = []
+
+        if start_time is not None:
+            conditions.append("timestamp >= ?")
+            parameters.append(start_time)
+
+        if end_time is not None:
+            conditions.append("timestamp <= ?")
+            parameters.append(end_time)
+
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+
+        row = self.connection.execute(
+            query,
+            parameters,
+        ).fetchone()
+
+        total_events = int(
+            row["total_events"] or 0
+        )
+
+        false_positive_events = int(
+            row["false_positive_events"] or 0
+        )
+
+        resolved_events = int(
+            row["resolved_events"] or 0
+        )
+
+        reviewed_events = (
+            false_positive_events
+            + resolved_events
+        )
+
+        false_positive_rate = (
+            (
+                false_positive_events
+                / reviewed_events
+            )
+            * 100.0
+            if reviewed_events > 0
+            else 0.0
+        )
+
+        return {
+            "total_events": total_events,
+            "false_positive_events": false_positive_events,
+            "resolved_events": resolved_events,
+            "reviewed_events": reviewed_events,
+            "false_positive_rate_percent": round(
+                false_positive_rate,
+                2,
+            ),
+        }
+
+    # ==========================================================
     # ==========================================================
     # INTERNAL ATOMIC UPDATE
     # ==========================================================

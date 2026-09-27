@@ -1,95 +1,70 @@
-from database.camera_database import CameraDatabase
+﻿from database.camera_database import CameraDatabase
 
 
-print("=" * 60)
-print("HOTEL AI CCTV - CAMERA HEALTH TEST")
-print("=" * 60)
+def test_camera_health_lifecycle(tmp_path):
+    database_path = tmp_path / "camera_health_test.db"
+    database = CameraDatabase(database_path)
 
-database = CameraDatabase()
+    camera_id = "CAM-001"
 
-camera_id = "CAM-001"
+    database.create_camera(
+        camera_id=camera_id,
+        name="Test Camera",
+        location="Test Area",
+        status="OFFLINE",
+    )
 
-camera = database.get_camera(camera_id)
+    try:
+        camera = database.get_camera(camera_id)
+        assert camera is not None
+        assert camera["status"] == "OFFLINE"
 
-if camera is None:
-    print(f"ERROR: {camera_id} does not exist.")
-    database.close()
-    raise SystemExit(1)
+        database.update_health(
+            camera_id=camera_id,
+            status="ONLINE",
+            fps=25.0,
+            width=1920,
+            height=1080,
+        )
 
-print(f"Camera found: {camera_id}")
-print(f"Current status: {camera['status']}")
+        camera = database.get_camera(camera_id)
 
-print("-" * 60)
-print("Simulating successful camera frames...")
+        assert camera["status"] == "ONLINE"
+        assert camera["fps"] == 25.0
+        assert camera["width"] == 1920
+        assert camera["height"] == 1080
+        assert camera["last_seen"] is not None
+        assert camera["consecutive_failures"] == 0
+        assert camera["last_error"] is None
 
-database.update_health(
-    camera_id=camera_id,
-    status="ONLINE",
-    fps=25.0,
-    width=1920,
-    height=1080,
-)
+        database.update_health(
+            camera_id=camera_id,
+            status="OFFLINE",
+            error="No frames received",
+        )
 
-camera = database.get_camera(camera_id)
+        camera = database.get_camera(camera_id)
 
-print(f"Status     : {camera['status']}")
-print(f"FPS        : {camera['fps']}")
-print(
-    f"Resolution : "
-    f"{camera['width']}x{camera['height']}"
-)
-print(f"Last seen  : {camera['last_seen']}")
-print(
-    f"Failures   : "
-    f"{camera['consecutive_failures']}"
-)
-print(f"Error      : {camera['last_error']}")
+        assert camera["status"] == "OFFLINE"
+        assert camera["consecutive_failures"] == 1
+        assert camera["last_error"] == "No frames received"
 
-print("-" * 60)
-print("Simulating camera failure...")
+        database.update_health(
+            camera_id=camera_id,
+            status="ONLINE",
+            fps=25.0,
+            width=1920,
+            height=1080,
+        )
 
-database.update_health(
-    camera_id=camera_id,
-    status="OFFLINE",
-    error="No frames received",
-)
+        camera = database.get_camera(camera_id)
 
-camera = database.get_camera(camera_id)
+        assert camera["status"] == "ONLINE"
+        assert camera["fps"] == 25.0
+        assert camera["width"] == 1920
+        assert camera["height"] == 1080
+        assert camera["consecutive_failures"] == 0
+        assert camera["last_error"] is None
 
-print(f"Status     : {camera['status']}")
-print(
-    f"Failures   : "
-    f"{camera['consecutive_failures']}"
-)
-print(f"Error      : {camera['last_error']}")
-
-print("-" * 60)
-print("Simulating camera recovery...")
-
-database.update_health(
-    camera_id=camera_id,
-    status="ONLINE",
-    fps=25.0,
-    width=1920,
-    height=1080,
-)
-
-camera = database.get_camera(camera_id)
-
-print(f"Status     : {camera['status']}")
-print(f"FPS        : {camera['fps']}")
-print(
-    f"Resolution : "
-    f"{camera['width']}x{camera['height']}"
-)
-print(
-    f"Failures   : "
-    f"{camera['consecutive_failures']}"
-)
-print(f"Error      : {camera['last_error']}")
-
-database.close()
-
-print("=" * 60)
-print("CAMERA HEALTH TEST COMPLETE")
-print("=" * 60)
+    finally:
+        database.close()

@@ -1,5 +1,6 @@
-import json
+﻿import json
 import os
+import time
 from pathlib import Path
 
 import cv2
@@ -25,9 +26,13 @@ from ai.camera_health import (
 from ai.camera_health_events import (
     CameraHealthEventService,
 )
+from ai.camera_health_history import (
+    CameraHealthHistoryService,
+)
 from ai.evidence_recorder import EvidenceRecorder
 
 from database.event_database import EventDatabase
+from database.camera_health_database import CameraHealthDatabase
 from database.camera_database import (
     BOOTSTRAP_METADATA_KEY,
     CameraDatabase,
@@ -37,6 +42,7 @@ from database.zone_database import (
     ZoneDatabase,
 )
 from notifications.dispatcher import NotificationDispatcher
+from evaluation.latency import LatencyMeasurement
 from notifications.providers import ConsoleNotificationProvider
 
 from rules.intrusion_rules import IntrusionRule
@@ -234,6 +240,7 @@ def process_camera(
     crowding_config=None,
     after_hours_config=None,
     after_hours_now_provider=None,
+    camera_health_history=None,
 ):
     """
     Process one configured camera from the shared CameraManager.
@@ -258,6 +265,7 @@ def process_camera(
     total_events = 0
     output_path = None
     camera_error = None
+    latency_measurement = LatencyMeasurement()
 
     # --------------------------------------------------------
     # Per-camera stateful components
@@ -551,6 +559,11 @@ def process_camera(
                     )
                 )
 
+                if camera_health_history is not None:
+                    camera_health_history.frame_failed(
+                        transition=transition,
+                    )
+
                 failure_count = (
                     camera_health.get_failure_count()
                 )
@@ -655,7 +668,7 @@ def process_camera(
             # ------------------------------------------------
             # Valid frame received
             # ------------------------------------------------
-
+            frame_received_at = time.perf_counter()
             previous_failure_count = (
                 camera_health.get_failure_count()
             )
@@ -665,6 +678,12 @@ def process_camera(
                 width=width,
                 height=height,
             )
+
+            if camera_health_history is not None:
+                camera_health_history.frame_received(
+                    source_fps=source_fps,
+                    transition=transition,
+                )
 
             # ------------------------------------------------
             # CAMERA RECOVERED transition
@@ -817,6 +836,8 @@ def process_camera(
                     + weapon_events
                 )
 
+                ai_completed_at = time.perf_counter()
+
                 # --------------------------------------------
                 # Draw zones
                 # --------------------------------------------
@@ -935,6 +956,8 @@ def process_camera(
                         )
                     )
 
+                    persisted_at = time.perf_counter()
+
                     # ----------------------------------------
                     # Start evidence capture
                     # ----------------------------------------
@@ -1015,6 +1038,16 @@ def process_camera(
                                     f"{event['message']}"
                                 ),
                             )
+                        )
+
+                        notification_queued_at = time.perf_counter()
+
+                        latency_measurement.record(
+                            event_type=event["event_type"],
+                            frame_received_at=frame_received_at,
+                            ai_completed_at=ai_completed_at,
+                            persisted_at=persisted_at,
+                            notification_queued_at=notification_queued_at,
                         )
 
                         print(
@@ -1185,6 +1218,25 @@ def process_camera(
                 )
 
         # ----------------------------------------------------
+        # Finalize camera health history
+        # ----------------------------------------------------
+
+        if camera_health_history is not None:
+
+            try:
+
+                camera_health_history.close()
+
+            except Exception as error:
+
+                print(
+                    f"[CLEANUP WARNING] "
+                    f"Camera={camera_id} "
+                    f"Camera health history finalization failed: "
+                    f"{error}"
+                )
+
+        # ----------------------------------------------------
         # Release writer
         # ----------------------------------------------------
 
@@ -1241,6 +1293,7 @@ def process_camera(
         "events": total_events,
         "output_path": output_path,
         "error": camera_error,
+        "latency": latency_measurement.to_dict(),
     }
 
 
@@ -1262,6 +1315,7 @@ def process_camera_worker(
     crowding_config=None,
     after_hours_config=None,
     after_hours_now_provider=None,
+    database_path="database/hotel_security.db",
 ):
     """
     Process one camera inside a worker thread.
@@ -1272,18 +1326,28 @@ def process_camera_worker(
 
     event_database = None
     camera_database = None
+    camera_health_database = None
 
     try:
         event_database = EventDatabase(
-            "database/hotel_security.db"
+            database_path
         )
 
         camera_database = CameraDatabase(
-            "database/hotel_security.db"
+            database_path
+        )
+
+        camera_health_database = CameraHealthDatabase(
+            database_path
         )
 
         camera_health_events = CameraHealthEventService(
             event_database=event_database
+        )
+
+        camera_health_history = CameraHealthHistoryService(
+            camera_id=camera_config.camera_id,
+            database=camera_health_database,
         )
 
         return process_camera(
@@ -1296,6 +1360,7 @@ def process_camera_worker(
             camera_database=camera_database,
             camera_health_events=camera_health_events,
             notification_dispatcher=notification_dispatcher,
+            camera_health_history=camera_health_history,
             fire_smoke_detection_provider=(
                 fire_smoke_detection_provider
             ),
@@ -1319,6 +1384,9 @@ def process_camera_worker(
 
         if camera_database is not None:
             camera_database.close()
+
+        if camera_health_database is not None:
+            camera_health_database.close()
 
 
 

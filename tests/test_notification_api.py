@@ -121,6 +121,10 @@ def client(monkeypatch):
             database_path=TEST_NOTIFICATION_DATABASE
         ),
     )
+    monkeypatch.setattr(
+        "backend.auth_dependencies.UserDatabase",
+        lambda: UserDatabase(TEST_USER_DATABASE),
+    )
 
     with TestClient(app) as test_client:
         yield test_client

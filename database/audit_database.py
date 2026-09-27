@@ -122,6 +122,39 @@ class AuditDatabase:
 
         return cursor.fetchall()
 
+    def get_logs_in_window(
+        self,
+        start_time=None,
+        end_time=None,
+    ):
+        """Return audit logs within an optional timestamp window."""
+
+        query = """
+            SELECT *
+            FROM audit_logs
+        """
+
+        parameters = []
+        conditions = []
+
+        if start_time is not None:
+            conditions.append("timestamp >= ?")
+            parameters.append(start_time)
+
+        if end_time is not None:
+            conditions.append("timestamp <= ?")
+            parameters.append(end_time)
+
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+
+        query += " ORDER BY timestamp ASC, id ASC"
+
+        return self.connection.execute(
+            query,
+            parameters,
+        ).fetchall()
+
     def close(self):
         if self.connection:
             self.connection.close()

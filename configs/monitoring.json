@@ -1,0 +1,7 @@
+﻿{
+    "resource_thresholds": {
+        "cpu_utilization_percent": 90.0,
+        "memory_utilization_percent": 90.0,
+        "disk_utilization_percent": 90.0
+    }
+}

@@ -110,3 +110,54 @@ def test_invalid_fps_is_rejected():
             predictions=[],
             fps=0,
         )
+
+def test_evaluator_reports_metrics_by_event_type():
+    truth = [
+        event(100, 160, event_type="INTRUSION"),
+        event(300, 360, event_type="WEAPON"),
+        event(500, 560, event_type="WEAPON"),
+    ]
+
+    predictions = [
+        event(105, 165, event_type="INTRUSION"),
+        event(305, 365, event_type="WEAPON"),
+        event(700, 760, event_type="WEAPON"),
+        event(800, 860, event_type="FIRE"),
+    ]
+
+    result = evaluate_events(
+        ground_truth=truth,
+        predictions=predictions,
+        fps=5.0,
+    )
+
+    assert set(result.metrics_by_event_type) == {
+        "INTRUSION",
+        "WEAPON",
+        "FIRE",
+    }
+
+    intrusion = result.metrics_by_event_type["INTRUSION"]
+    assert intrusion.true_positives == 1
+    assert intrusion.false_positives == 0
+    assert intrusion.false_negatives == 0
+
+    weapon = result.metrics_by_event_type["WEAPON"]
+    assert weapon.true_positives == 1
+    assert weapon.false_positives == 1
+    assert weapon.false_negatives == 1
+
+    fire = result.metrics_by_event_type["FIRE"]
+    assert fire.true_positives == 0
+    assert fire.false_positives == 1
+    assert fire.false_negatives == 0
+
+
+def test_evaluator_reports_empty_metrics_by_event_type_when_no_events():
+    result = evaluate_events(
+        ground_truth=[],
+        predictions=[],
+        fps=5.0,
+    )
+
+    assert result.metrics_by_event_type == {}

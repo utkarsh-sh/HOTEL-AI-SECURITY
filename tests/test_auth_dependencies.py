@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 from backend.auth_dependencies import (
     authenticate_token,
@@ -9,11 +10,14 @@ from database.user_database import UserDatabase
 
 
 TEST_DATABASE = "database/test_rbac.db"
+TEST_JWT_SECRET = "test-only-jwt-secret-for-local-tests-2026"
 
 
 def main():
     print("RBAC AUTHENTICATION DEPENDENCY TEST")
     print()
+
+    os.environ["HOTEL_SECURITY_JWT_SECRET"] = TEST_JWT_SECRET
 
     # Always start with a fresh test database.
     test_database_path = Path(TEST_DATABASE)

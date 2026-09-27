@@ -1,0 +1,4 @@
+﻿{
+    "event_retention_days": 30,
+    "evidence_retention_days": 30
+}
