@@ -76,10 +76,64 @@ def test_generate_report_rejects_missing_artifact(tmp_path):
     )
 
 
-def test_generate_evaluation_report_with_ground_truth():
-    artifact_path = "data/output/evaluation_CAM-001.json"
-    ground_truth_path = "data/output/ground_truth_ranges.json"
-    report_path = Path("data/output/test_evaluation_report_with_ground_truth.json")
+def test_generate_evaluation_report_with_ground_truth(tmp_path):
+    artifact_path = tmp_path / "evaluation_CAM-001.json"
+    ground_truth_path = tmp_path / "ground_truth_ranges.json"
+    report_path = tmp_path / "test_evaluation_report_with_ground_truth.json"
+
+    artifact = {
+        "video": "01_person_tracking_intrusion.mp4",
+        "camera_id": "CAM-001",
+        "source_fps": 25.0,
+        "ai_fps": 5.0,
+        "model_version": "prototype-v1",
+        "result": {
+            "total_frames": 500,
+            "ai_frames": 100,
+            "predictions": [
+                {
+                    "event_type": "INTRUSION",
+                    "zone_id": "restricted_01",
+                    "start_frame": 20,
+                    "end_frame": 30,
+                },
+                {
+                    "event_type": "INTRUSION",
+                    "zone_id": "restricted_01",
+                    "start_frame": 40,
+                    "end_frame": 50,
+                },
+                {
+                    "event_type": "INTRUSION",
+                    "zone_id": "restricted_01",
+                    "start_frame": 70,
+                    "end_frame": 80,
+                },
+            ],
+        },
+    }
+
+    ground_truth = {
+        "video": "01_person_tracking_intrusion.mp4",
+        "camera_id": "CAM-001",
+        "events": [
+            {
+                "event_type": "INTRUSION",
+                "zone_id": "restricted_01",
+                "start_frame": 10,
+                "end_frame": 20,
+            }
+        ],
+    }
+
+    artifact_path.write_text(
+        json.dumps(artifact),
+        encoding="utf-8",
+    )
+    ground_truth_path.write_text(
+        json.dumps(ground_truth),
+        encoding="utf-8",
+    )
 
     report = generate_evaluation_report(
         artifact_path,
