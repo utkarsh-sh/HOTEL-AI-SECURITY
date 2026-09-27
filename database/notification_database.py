@@ -169,6 +169,45 @@ class NotificationDatabase:
             for row in rows
         ]
 
+    def get_notifications_in_window(
+        self,
+        start_time=None,
+        end_time=None,
+    ):
+        """Return notifications created within an optional time window."""
+
+        query = """
+            SELECT *
+            FROM notifications
+        """
+
+        parameters = []
+        conditions = []
+
+        if start_time is not None:
+            conditions.append("created_at >= ?")
+            parameters.append(start_time)
+
+        if end_time is not None:
+            conditions.append("created_at <= ?")
+            parameters.append(end_time)
+
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+
+        query += " ORDER BY created_at ASC, id ASC"
+
+        rows = self.connection.execute(
+            query,
+            parameters,
+        ).fetchall()
+
+        return [
+            dict(row)
+            for row in rows
+        ]
+
+    # ==========================================================
     # ==========================================================
     # UPDATE STATUS
     # ==========================================================
