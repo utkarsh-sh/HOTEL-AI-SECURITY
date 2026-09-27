@@ -43,7 +43,10 @@ from database.zone_database import (
 )
 from notifications.dispatcher import NotificationDispatcher
 from evaluation.latency import LatencyMeasurement
-from notifications.providers import ConsoleNotificationProvider
+from notifications.providers import (
+    ConsoleNotificationProvider,
+    WebhookNotificationProvider,
+)
 
 from rules.intrusion_rules import IntrusionRule
 from rules.crowding_rules import CrowdingRule
@@ -1639,10 +1642,18 @@ def main():
             event_database=event_database
         )
 
+        notification_providers = {
+            "CONSOLE": ConsoleNotificationProvider(),
+        }
+
+        webhook_url = os.getenv("HOTEL_SECURITY_WEBHOOK_URL", "").strip()
+        if webhook_url:
+            notification_providers["WEBHOOK"] = WebhookNotificationProvider(
+                webhook_url
+            )
+
         notification_dispatcher = NotificationDispatcher(
-            providers={
-                "CONSOLE": ConsoleNotificationProvider(),
-            },
+            providers=notification_providers,
             database_path="database/hotel_security.db",
             max_workers=2,
             max_retries=2,

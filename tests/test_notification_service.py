@@ -460,3 +460,219 @@ def test_negative_retry_count_is_rejected(
             providers={},
             max_retries=-1,
         )
+def test_webhook_provider_success(monkeypatch):
+    from notifications.providers import (
+        NotificationMessage,
+        WebhookNotificationProvider,
+    )
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["body"] = request.data
+        captured["content_type"] = request.headers["Content-type"]
+        return FakeResponse()
+
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        fake_urlopen,
+    )
+
+    provider = WebhookNotificationProvider(
+        url="http://example.test/webhook",
+        timeout_seconds=7,
+    )
+
+    result = provider.send(
+        NotificationMessage(
+            event_id=42,
+            severity="CRITICAL",
+            channel="WEBHOOK",
+            recipient="security@test.local",
+            subject="Critical Alert",
+            message="Intrusion detected.",
+        )
+    )
+
+    assert result.success is True
+    assert result.provider == "WEBHOOK"
+    assert result.sent_at is not None
+    assert captured["url"] == "http://example.test/webhook"
+    assert captured["timeout"] == 7
+    assert captured["content_type"] == "application/json"
+
+    import json
+
+    payload = json.loads(captured["body"].decode("utf-8"))
+
+    assert payload == {
+        "event_id": 42,
+        "severity": "CRITICAL",
+        "channel": "WEBHOOK",
+        "recipient": "security@test.local",
+        "subject": "Critical Alert",
+        "message": "Intrusion detected.",
+    }
+
+
+def test_webhook_provider_http_error(monkeypatch):
+    from urllib.error import HTTPError
+
+    from notifications.providers import (
+        NotificationMessage,
+        WebhookNotificationProvider,
+    )
+
+    def fake_urlopen(request, timeout):
+        raise HTTPError(
+            request.full_url,
+            503,
+            "Service Unavailable",
+            {},
+            None,
+        )
+
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        fake_urlopen,
+    )
+
+    provider = WebhookNotificationProvider(
+        url="http://example.test/webhook",
+    )
+
+    result = provider.send(
+        NotificationMessage(
+            event_id=43,
+            severity="HIGH",
+            channel="WEBHOOK",
+            recipient=None,
+            subject="High Alert",
+            message="Test failure.",
+        )
+    )
+
+    assert result.success is False
+    assert result.provider == "WEBHOOK"
+    assert result.error_message == "Webhook returned HTTP 503"
+    assert result.sent_at is None
+
+
+def test_webhook_provider_network_error(monkeypatch):
+    from urllib.error import URLError
+
+    from notifications.providers import (
+        NotificationMessage,
+        WebhookNotificationProvider,
+    )
+
+    def fake_urlopen(request, timeout):
+        raise URLError("Connection refused")
+
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        fake_urlopen,
+    )
+
+    provider = WebhookNotificationProvider(
+        url="http://example.test/webhook",
+    )
+
+    result = provider.send(
+        NotificationMessage(
+            event_id=44,
+            severity="HIGH",
+            channel="WEBHOOK",
+            recipient=None,
+            subject="Network Test",
+            message="Network failure.",
+        )
+    )
+
+    assert result.success is False
+    assert result.provider == "WEBHOOK"
+    assert "Connection refused" in result.error_message
+    assert result.sent_at is None
+
+
+def test_webhook_provider_rejects_invalid_configuration():
+    from notifications.providers import WebhookNotificationProvider
+
+    import pytest
+
+    with pytest.raises(ValueError, match="non-empty"):
+        WebhookNotificationProvider("")
+
+    with pytest.raises(ValueError, match="greater than 0"):
+        WebhookNotificationProvider(
+            "http://example.test/webhook",
+            timeout_seconds=0,
+        )
+
+
+def test_webhook_provider_failure_uses_existing_retry_policy(
+    test_database,
+    monkeypatch,
+):
+    from urllib.error import URLError
+
+    from notifications.providers import (
+        WebhookNotificationProvider,
+    )
+    from notifications.service import NotificationService
+
+    def fake_urlopen(request, timeout):
+        raise URLError("Webhook unavailable")
+
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        fake_urlopen,
+    )
+
+    provider = WebhookNotificationProvider(
+        url="http://example.test/webhook",
+    )
+
+    service = NotificationService(
+        database=test_database,
+        providers={
+            "WEBHOOK": provider,
+        },
+        max_retries=2,
+    )
+
+    result = service.send_notification(
+        event_id=1,
+        severity="HIGH",
+        channel="WEBHOOK",
+        recipient="security@test.local",
+        subject="Webhook Retry Test",
+        message="Webhook retry integration test.",
+    )
+
+    assert result["success"] is False
+    assert result["provider"] == "WEBHOOK"
+    assert result["attempts"] == 3
+    assert "Webhook unavailable" in result["error_message"]
+
+    notification = test_database.get_notification(
+        result["notification_id"]
+    )
+
+    assert notification is not None
+    assert notification["channel"] == "WEBHOOK"
+    assert notification["provider"] == "WEBHOOK"
+    assert notification["status"] == "FAILED"
+    assert notification["retry_count"] == 3
+    assert notification["sent_at"] is None
