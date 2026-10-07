@@ -12,3 +12,4 @@ psutil==7.2.2
 argon2-cffi==25.1.0
 httpx2==2.13.1
 python-multipart==0.0.32
+prometheus-client==0.26.0

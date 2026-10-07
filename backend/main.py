@@ -7,7 +7,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from database.event_database import EventDatabase
@@ -34,6 +34,11 @@ from backend.auth_dependencies import (
     require_roles,
 )
 
+from database.monitoring_config import MonitoringConfiguration
+from monitoring.prometheus_metrics import PrometheusMetrics
+from monitoring.resource_thresholds import evaluate_resource_thresholds
+from monitoring.system_metrics import collect_system_metrics
+
 from rules.event_workflow import (
     validate_transition,
     InvalidEventTransitionError,
@@ -46,6 +51,8 @@ app = FastAPI(
     version="0.3.0",
 )
 
+
+prometheus_metrics = PrometheusMetrics()
 
 # ============================================================
 # CORS
@@ -154,6 +161,30 @@ def validate_event_transition(
             status_code=409,
             detail=str(error),
         )
+
+
+# ============================================================
+# PROMETHEUS METRICS
+# ============================================================
+
+
+@app.get("/metrics")
+def prometheus_metrics_endpoint():
+    metrics = collect_system_metrics()
+    configuration = MonitoringConfiguration()
+    evaluation = evaluate_resource_thresholds(
+        metrics,
+        configuration,
+    )
+
+    cameras = CameraDatabase().get_all_cameras()
+    prometheus_metrics.update_system_metrics(metrics, evaluation)
+    prometheus_metrics.update_camera_metrics(cameras)
+
+    return Response(
+        content=prometheus_metrics.render(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 # ============================================================
