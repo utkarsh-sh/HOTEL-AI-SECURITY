@@ -145,6 +145,14 @@ Authenticated operational endpoints include:
 
 Use the authenticated API/dashboard to verify that the service is responding before relying on AI alerts.
 
+The API also exposes a Prometheus metrics endpoint:
+
+```text
+GET /metrics
+```
+
+Verify that it responds successfully during pilot validation. The endpoint exposes API request count, API error count, and API request latency metrics, along with the existing system and camera monitoring metrics. API request metrics use normalized route labels and exclude the `/metrics` scrape request itself. Runner event-path latency is measured separately by the CCTV processing runtime and is not exposed through the FastAPI `/metrics` endpoint.
+
 ## 7. CCTV Runner
 
 The CCTV processing entry point is:
@@ -406,6 +414,8 @@ Before declaring a pilot observation period complete, verify:
 - [ ] Zone configuration is reviewed.
 - [ ] Detection-rule configuration is reviewed.
 - [ ] Resource monitoring records exist.
+- [ ] Prometheus `/metrics` endpoint responds successfully.
+- [ ] API request/error/latency metrics are visible from the Prometheus endpoint.
 - [ ] Camera health records exist.
 - [ ] Historical camera uptime/feed-rate report is generated for the observed period.
 - [ ] Event records are available.
@@ -454,7 +464,7 @@ Manual surveillance remains the operational fallback when automated coverage can
 The following must not be represented as already-implemented production capabilities:
 
 - Real SMS/email/push notification delivery.
-- Prometheus/Grafana or equivalent external monitoring.
+- Grafana dashboards or equivalent external visualization.
 - Docker/container deployment.
 - PostgreSQL deployment.
 - 10+ camera performance/load validation.
