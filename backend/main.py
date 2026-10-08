@@ -5,9 +5,11 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 from typing import Optional
+import os
 
 from fastapi import FastAPI, HTTPException, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
@@ -54,6 +56,35 @@ app = FastAPI(
 
 
 prometheus_metrics = PrometheusMetrics()
+
+# ============================================================
+# HTTP SECURITY
+# ============================================================
+
+_allowed_hosts = [
+    host.strip()
+    for host in os.getenv(
+        "HOTEL_SECURITY_ALLOWED_HOSTS",
+        "localhost,127.0.0.1,testserver",
+    ).split(",")
+    if host.strip()
+]
+
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=_allowed_hosts,
+)
+
+
+@app.middleware("http")
+async def security_headers_middleware(request, call_next):
+    """Add minimal browser-facing HTTP security headers."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
 
 # ============================================================
 # CORS
