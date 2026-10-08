@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from backend.main import app
+from backend.main import app, prometheus_metrics
 from database.camera_database import CameraDatabase
 
 
@@ -164,6 +164,49 @@ class TestPrometheusMetricsAPI(unittest.TestCase):
             response = self.client.get("/metrics")
 
         self.assertEqual(response.status_code, 200)
+
+    def test_api_requests_use_normalized_route_labels(self):
+        response = self.client.get("/events/123456")
+
+        self.assertEqual(response.status_code, 401)
+
+        body = prometheus_metrics.render().decode("utf-8")
+
+        self.assertIn(
+            'hotel_security_api_requests_total{method="GET",route="/events/{event_id}",status_code="401"}',
+            body,
+        )
+        self.assertIn(
+            'hotel_security_api_request_errors_total{method="GET",route="/events/{event_id}",status_code="401"}',
+            body,
+        )
+        self.assertIn(
+            'hotel_security_api_request_duration_seconds_count{method="GET",route="/events/{event_id}"}',
+            body,
+        )
+        self.assertNotIn(
+            'route="/events/123456"',
+            body,
+        )
+
+    def test_metrics_scrape_is_not_instrumented(self):
+        with patch(
+            "backend.main.collect_system_metrics",
+            return_value=self.system_metrics,
+        ), patch(
+            "backend.main.CameraDatabase"
+        ) as camera_database_class:
+            camera_database_class.return_value.get_all_cameras.return_value = []
+
+            first_response = self.client.get("/metrics")
+            second_response = self.client.get("/metrics")
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(second_response.status_code, 200)
+        self.assertNotIn(
+            'route="/metrics"',
+            second_response.text,
+        )
 
 
 if __name__ == "__main__":

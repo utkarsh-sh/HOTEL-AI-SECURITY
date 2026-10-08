@@ -195,3 +195,77 @@ def test_invalid_monitoring_status_is_treated_as_alert():
         output,
         "hotel_security_monitoring_status",
     ) == pytest.approx(0.0)
+
+
+def test_api_request_metrics_record_success_and_latency():
+    exporter = PrometheusMetrics()
+
+    exporter.record_api_request(
+        method="GET",
+        route="/health",
+        status_code=200,
+        duration_seconds=0.125,
+    )
+
+    output = exporter.render().decode("utf-8")
+
+    assert metric_value(
+        output,
+        "hotel_security_api_requests_total",
+        {
+            "method": "GET",
+            "route": "/health",
+            "status_code": "200",
+        },
+    ) == pytest.approx(1.0)
+
+    assert metric_value(
+        output,
+        "hotel_security_api_request_duration_seconds_count",
+        {
+            "method": "GET",
+            "route": "/health",
+        },
+    ) == pytest.approx(1.0)
+
+    assert metric_value(
+        output,
+        "hotel_security_api_request_duration_seconds_sum",
+        {
+            "method": "GET",
+            "route": "/health",
+        },
+    ) == pytest.approx(0.125)
+
+
+def test_api_request_metrics_record_errors():
+    exporter = PrometheusMetrics()
+
+    exporter.record_api_request(
+        method="GET",
+        route="__unmatched__",
+        status_code=404,
+        duration_seconds=0.050,
+    )
+
+    output = exporter.render().decode("utf-8")
+
+    assert metric_value(
+        output,
+        "hotel_security_api_requests_total",
+        {
+            "method": "GET",
+            "route": "__unmatched__",
+            "status_code": "404",
+        },
+    ) == pytest.approx(1.0)
+
+    assert metric_value(
+        output,
+        "hotel_security_api_request_errors_total",
+        {
+            "method": "GET",
+            "route": "__unmatched__",
+            "status_code": "404",
+        },
+    ) == pytest.approx(1.0)
