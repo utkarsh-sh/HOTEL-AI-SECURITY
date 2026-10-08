@@ -1,4 +1,4 @@
-from prometheus_client import CollectorRegistry, Gauge, generate_latest
+from prometheus_client import Counter, CollectorRegistry, Gauge, Histogram, generate_latest
 
 
 class PrometheusMetrics:
@@ -59,6 +59,53 @@ class PrometheusMetrics:
             ["camera_id"],
             registry=self.registry,
         )
+
+        self.api_requests = Counter(
+            "hotel_security_api_requests",
+            "Total HTTP API requests.",
+            ["method", "route", "status_code"],
+            registry=self.registry,
+        )
+        self.api_request_errors = Counter(
+            "hotel_security_api_request_errors",
+            "Total HTTP API requests returning an error status.",
+            ["method", "route", "status_code"],
+            registry=self.registry,
+        )
+        self.api_request_duration = Histogram(
+            "hotel_security_api_request_duration_seconds",
+            "HTTP API request duration in seconds.",
+            ["method", "route"],
+            registry=self.registry,
+        )
+
+    def record_api_request(
+        self,
+        method,
+        route,
+        status_code,
+        duration_seconds,
+    ):
+        """Record one HTTP API request."""
+        status_code = int(status_code)
+
+        self.api_requests.labels(
+            method=method,
+            route=route,
+            status_code=str(status_code),
+        ).inc()
+
+        if status_code >= 400:
+            self.api_request_errors.labels(
+                method=method,
+                route=route,
+                status_code=str(status_code),
+            ).inc()
+
+        self.api_request_duration.labels(
+            method=method,
+            route=route,
+        ).observe(float(duration_seconds))
 
     def update_system_metrics(self, metrics, evaluation):
         """Update exported host and GPU metrics."""

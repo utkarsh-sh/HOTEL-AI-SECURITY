@@ -1,6 +1,7 @@
 from backend.notification_routes import router as notification_router
 import json
 import sqlite3
+import time
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 from typing import Optional
@@ -68,6 +69,42 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ============================================================
+# API PROMETHEUS OBSERVABILITY
+# ============================================================
+
+
+@app.middleware("http")
+async def prometheus_api_metrics_middleware(request, call_next):
+    """Record bounded-cardinality HTTP API metrics."""
+    if request.url.path == "/metrics":
+        return await call_next(request)
+
+    start_time = time.perf_counter()
+    status_code = 500
+
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    finally:
+        route = request.scope.get("route")
+        route_path = getattr(
+            route,
+            "path",
+            "__unmatched__",
+        )
+
+        prometheus_metrics.record_api_request(
+            method=request.method,
+            route=route_path,
+            status_code=status_code,
+            duration_seconds=(
+                time.perf_counter() - start_time
+            ),
+        )
 
 
 # ============================================================
