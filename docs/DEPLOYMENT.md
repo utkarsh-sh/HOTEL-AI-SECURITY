@@ -194,6 +194,11 @@ During startup and operation, verify:
 8. Camera health records are updated.
 9. System monitoring samples are collected.
 10. Authentication and operator event actions work through the API.
+11. The Prometheus metrics endpoint responds successfully when monitoring integration is enabled.
+
+Verify the Prometheus endpoint with:
+
+    Invoke-WebRequest http://127.0.0.1:8000/metrics
 
 Collect a system monitoring sample with:
 
@@ -266,7 +271,7 @@ The following are not currently implemented as part of this deployment:
 - Docker/container deployment
 - Automated CI/CD deployment to production infrastructure
 - PostgreSQL production migration
-- Prometheus/Grafana monitoring
+- Prometheus metrics endpoint (`GET /metrics`) is implemented; Grafana dashboards are not currently implemented
 - Automated external restart orchestration
 - Complete external alerting infrastructure
 - Validated 10+ camera performance/load deployment
