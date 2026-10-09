@@ -1,4 +1,4 @@
-﻿import sqlite3
+import sqlite3
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -23,7 +23,8 @@ class EventDatabase:
         )
 
         self.connection = sqlite3.connect(
-            self.database_path
+            self.database_path,
+            timeout=10.0
         )
 
         self.connection.row_factory = sqlite3.Row
