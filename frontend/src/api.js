@@ -274,21 +274,11 @@ export async function getAuditLogs() {
 export async function getEventAuditLogs(
   eventId
 ) {
-  const result =
-    await getAuditLogs();
-
-  const logs =
-    result.logs.filter(
-      (log) =>
-        log.entity_type === "event" &&
-        String(log.entity_id) ===
-          String(eventId)
-    );
-
-  return {
-    total: logs.length,
-    logs,
-  };
+  return request(
+    `/audit-logs?entity_type=event&entity_id=${encodeURIComponent(
+      eventId
+    )}&page=1&page_size=100`
+  );
 }
 
 export async function getEventEvidence(
@@ -346,6 +336,6 @@ export async function getEventNotifications(
   eventId
 ) {
   return request(
-    `/notifications/event/${eventId}`
+    `/notifications/event/${eventId}?page=1&page_size=100`
   );
 }
