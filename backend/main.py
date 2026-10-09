@@ -7,7 +7,7 @@ from urllib.parse import urlsplit, urlunsplit
 from typing import Optional
 import os
 
-from fastapi import FastAPI, HTTPException, Form, Depends
+from fastapi import FastAPI, HTTPException, Form, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, Response
@@ -23,6 +23,7 @@ from backend.auth_service import (
     AuthenticationError,
 )
 from backend.auth_jwt import create_access_token
+from backend.login_rate_limiter import LoginRateLimiter
 from backend.camera_schemas import (
     CameraCreateRequest,
     CameraUpdateRequest,
@@ -56,6 +57,7 @@ app = FastAPI(
 
 
 prometheus_metrics = PrometheusMetrics()
+login_rate_limiter = LoginRateLimiter()
 
 # ============================================================
 # HTTP SECURITY
@@ -276,9 +278,20 @@ def health_check():
 
 @app.post("/login")
 def login(
+    request: Request,
     username: str = Form(...),
     password: str = Form(...),
 ):
+    client_id = request.client.host if request.client else "unknown"
+
+    allowed, retry_after = login_rate_limiter.check(client_id)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed login attempts. Try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     auth_service = AuthService()
 
     try:
@@ -288,11 +301,15 @@ def login(
                 password=password,
             )
 
-        except AuthenticationError as error:
+        except AuthenticationError:
+            login_rate_limiter.record_failure(client_id)
+
             raise HTTPException(
                 status_code=401,
-                detail=str(error),
+                detail="Invalid username or password.",
             )
+
+        login_rate_limiter.clear(client_id)
 
         access_token = create_access_token(user)
 
