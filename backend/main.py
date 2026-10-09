@@ -7,7 +7,7 @@ from urllib.parse import urlsplit, urlunsplit
 from typing import Optional
 import os
 
-from fastapi import FastAPI, HTTPException, Form, Depends, Request
+from fastapi import FastAPI, HTTPException, Form, Depends, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, Response
@@ -1095,40 +1095,31 @@ def get_events(
     severity: Optional[str] = None,
     event_type: Optional[str] = None,
     camera_id: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
     current_user: dict = Depends(get_current_user),
 ):
     database = EventDatabase()
 
     try:
-        events = database.get_all_events()
-
-        filtered_events = []
-
-        for event in events:
-            event_dict = dict(event)
-
-            if status and event_dict["status"] != status:
-                continue
-
-            if severity and event_dict["severity"] != severity:
-                continue
-
-            if event_type and event_dict["event_type"] != event_type:
-                continue
-
-            if camera_id and event_dict["camera_id"] != camera_id:
-                continue
-
-            filtered_events.append(event_dict)
+        result = database.get_events_page(
+            page=page,
+            page_size=page_size,
+            status=status,
+            severity=severity,
+            event_type=event_type,
+            camera_id=camera_id,
+        )
 
         return {
-            "total": len(filtered_events),
-            "events": filtered_events,
+            "total": result["total"],
+            "page": page,
+            "page_size": page_size,
+            "events": result["events"],
         }
 
     finally:
         database.close()
-
 
 @app.get("/events/{event_id}")
 def get_event(
@@ -1454,16 +1445,27 @@ def mark_false_positive(
 
 @app.get("/audit-logs")
 def get_audit_logs(
+    entity_type: Optional[str] = None,
+    entity_id: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
     current_user: dict = Depends(get_current_user),
 ):
     database = AuditDatabase()
 
     try:
-        logs = database.get_all_logs()
+        result = database.get_logs_page(
+            page=page,
+            page_size=page_size,
+            entity_type=entity_type,
+            entity_id=entity_id,
+        )
 
         return {
-            "total": len(logs),
-            "logs": [dict(log) for log in logs],
+            "total": result["total"],
+            "page": page,
+            "page_size": page_size,
+            "logs": result["logs"],
         }
 
     finally:

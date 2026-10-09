@@ -101,6 +101,62 @@ class AuditDatabase:
 
         return cursor.fetchall()
 
+    def get_logs_page(
+        self,
+        page=1,
+        page_size=50,
+        entity_type=None,
+        entity_id=None,
+    ):
+        """Return a filtered, paginated page of audit logs."""
+
+        offset = (page - 1) * page_size
+
+        conditions = []
+        parameters = []
+
+        if entity_type is not None:
+            conditions.append("entity_type = ?")
+            parameters.append(entity_type)
+
+        if entity_id is not None:
+            conditions.append("entity_id = ?")
+            parameters.append(str(entity_id))
+
+        where_clause = ""
+
+        if conditions:
+            where_clause = (
+                " WHERE " + " AND ".join(conditions)
+            )
+
+        total = self.connection.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM audit_logs
+            {where_clause}
+            """,
+            parameters,
+        ).fetchone()[0]
+
+        rows = self.connection.execute(
+            f"""
+            SELECT *
+            FROM audit_logs
+            {where_clause}
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?
+            """,
+            parameters + [page_size, offset],
+        ).fetchall()
+
+        return {
+            "total": total,
+            "logs": [
+                dict(row)
+                for row in rows
+            ],
+        }
     def get_logs_for_entity(
         self,
         entity_type,

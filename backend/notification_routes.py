@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from backend.auth_dependencies import get_current_user
 from database.notification_database import NotificationDatabase
@@ -21,40 +21,56 @@ def _get_database():
 
 @router.get("")
 def get_notifications(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
     current_user: dict = Depends(get_current_user),
     database: NotificationDatabase = Depends(_get_database),
 ):
     """
-    Return notification delivery records.
+    Return a paginated page of notification delivery records.
 
     Authentication is required. Notification records are read-only
     through this API.
     """
 
+    result = database.get_notifications_page(
+        page=page,
+        page_size=page_size,
+    )
+
     return {
-        "notifications": database.get_all_notifications()
+        "total": result["total"],
+        "page": page,
+        "page_size": page_size,
+        "notifications": result["notifications"],
     }
 
 
 @router.get("/event/{event_id}")
 def get_event_notifications(
     event_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
     current_user: dict = Depends(get_current_user),
     database: NotificationDatabase = Depends(_get_database),
 ):
     """
-    Return notification delivery records associated with an event.
+    Return a paginated page of notification delivery records
+    associated with an event.
     """
 
-    notifications = [
-        notification
-        for notification in database.get_all_notifications()
-        if notification["event_id"] == event_id
-    ]
+    result = database.get_notifications_page(
+        page=page,
+        page_size=page_size,
+        event_id=event_id,
+    )
 
     return {
         "event_id": event_id,
-        "notifications": notifications,
+        "total": result["total"],
+        "page": page,
+        "page_size": page_size,
+        "notifications": result["notifications"],
     }
 
 

@@ -169,6 +169,58 @@ class NotificationDatabase:
             for row in rows
         ]
 
+    def get_notifications_page(
+        self,
+        page=1,
+        page_size=50,
+        event_id=None,
+    ):
+        """Return a filtered, paginated page of notifications."""
+
+        offset = (page - 1) * page_size
+
+        conditions = []
+        parameters = []
+
+        if event_id is not None:
+            conditions.append("event_id = ?")
+            parameters.append(event_id)
+
+        where_clause = ""
+
+        if conditions:
+            where_clause = (
+                " WHERE " + " AND ".join(conditions)
+            )
+
+        total = self.connection.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM notifications
+            {where_clause}
+            """,
+            parameters,
+        ).fetchone()[0]
+
+        rows = self.connection.execute(
+            f"""
+            SELECT *
+            FROM notifications
+            {where_clause}
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?
+            """,
+            parameters + [page_size, offset],
+        ).fetchall()
+
+        return {
+            "total": total,
+            "notifications": [
+                dict(row)
+                for row in rows
+            ],
+        }
+
     def get_notifications_in_window(
         self,
         start_time=None,

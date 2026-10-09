@@ -257,3 +257,89 @@ def test_event_without_notifications_returns_empty_list(
 
     assert payload["event_id"] == 999999
     assert payload["notifications"] == []
+
+def test_authenticated_user_can_paginate_notifications(
+    client,
+    access_token,
+    notification_records,
+):
+    response = client.get(
+        "/notifications?page=2&page_size=1",
+        headers=authorization_header(access_token),
+    )
+
+    assert response.status_code == 200
+
+    payload = response.json()
+
+    assert payload["total"] == 2
+    assert payload["page"] == 2
+    assert payload["page_size"] == 1
+    assert len(payload["notifications"]) == 1
+
+
+def test_authenticated_user_can_paginate_event_notifications(
+    client,
+    access_token,
+    notification_records,
+):
+    event_id = notification_records["event_id"]
+
+    response = client.get(
+        f"/notifications/event/{event_id}?page=1&page_size=1",
+        headers=authorization_header(access_token),
+    )
+
+    assert response.status_code == 200
+
+    payload = response.json()
+
+    assert payload["event_id"] == event_id
+    assert payload["total"] == 2
+    assert payload["page"] == 1
+    assert payload["page_size"] == 1
+    assert len(payload["notifications"]) == 1
+    assert payload["notifications"][0]["event_id"] == event_id
+
+
+def test_event_notifications_pagination_rejects_invalid_parameters(
+    client,
+    access_token,
+    notification_records,
+):
+    event_id = notification_records["event_id"]
+    headers = authorization_header(access_token)
+
+    response = client.get(
+        f"/notifications/event/{event_id}?page=0",
+        headers=headers,
+    )
+
+    assert response.status_code == 422
+
+    response = client.get(
+        "/notifications?page_size=101",
+        headers=headers,
+    )
+
+    assert response.status_code == 422
+
+
+def test_event_notifications_pagination_preserves_empty_result(
+    client,
+    access_token,
+):
+    response = client.get(
+        "/notifications/event/999999?page=1&page_size=50",
+        headers=authorization_header(access_token),
+    )
+
+    assert response.status_code == 200
+
+    payload = response.json()
+
+    assert payload["event_id"] == 999999
+    assert payload["total"] == 0
+    assert payload["page"] == 1
+    assert payload["page_size"] == 50
+    assert payload["notifications"] == []
