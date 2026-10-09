@@ -1,4 +1,4 @@
-import sqlite3
+﻿import sqlite3
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -269,6 +269,72 @@ class EventDatabase:
     # EVENT QUERY
     # ==========================================================
 
+    def get_events_page(
+        self,
+        page=1,
+        page_size=50,
+        status=None,
+        severity=None,
+        event_type=None,
+        camera_id=None,
+    ):
+        """Return a filtered, paginated page of events."""
+
+        offset = (page - 1) * page_size
+
+        conditions = []
+        parameters = []
+
+        if status is not None:
+            conditions.append("status = ?")
+            parameters.append(status)
+
+        if severity is not None:
+            conditions.append("severity = ?")
+            parameters.append(severity)
+
+        if event_type is not None:
+            conditions.append("event_type = ?")
+            parameters.append(event_type)
+
+        if camera_id is not None:
+            conditions.append("camera_id = ?")
+            parameters.append(camera_id)
+
+        where_clause = ""
+
+        if conditions:
+            where_clause = (
+                " WHERE " + " AND ".join(conditions)
+            )
+
+        total = self.connection.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM events
+            {where_clause}
+            """,
+            parameters,
+        ).fetchone()[0]
+
+        rows = self.connection.execute(
+            f"""
+            SELECT *
+            FROM events
+            {where_clause}
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?
+            """,
+            parameters + [page_size, offset],
+        ).fetchall()
+
+        return {
+            "total": total,
+            "events": [
+                dict(row)
+                for row in rows
+            ],
+        }
     def get_events_in_window(
         self,
         start_time=None,
