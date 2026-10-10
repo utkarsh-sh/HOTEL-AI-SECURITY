@@ -1,4 +1,4 @@
-﻿import json
+import json
 import os
 import time
 from pathlib import Path
@@ -31,6 +31,7 @@ from ai.camera_health_history import (
 )
 from ai.evidence_recorder import EvidenceRecorder
 
+from database.sqlite_setup import verify_configured_journal_mode
 from database.event_database import EventDatabase
 from database.camera_health_database import CameraHealthDatabase
 from database.camera_database import (
@@ -1398,6 +1399,8 @@ def process_camera_worker(
 # ============================================================
 
 def main():
+
+    verify_configured_journal_mode("database/hotel_security.db")
 
     print("=" * 60)
     print("HOTEL AI CCTV - MULTI-CAMERA INTRUSION DETECTION")

@@ -18,7 +18,8 @@ class CameraDatabase:
         )
 
         self.connection = sqlite3.connect(
-            self.database_path
+            self.database_path,
+            timeout=10.0
         )
 
         self.connection.row_factory = sqlite3.Row

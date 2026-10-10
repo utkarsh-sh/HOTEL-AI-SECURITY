@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -18,9 +18,7 @@ TEST_EVENT_DATABASE = Path(
 TEST_USER_DATABASE = Path(
     "database/test_false_positive_api_users.db"
 )
-TEST_AUDIT_DATABASE = Path(
-    "database/test_false_positive_api_audit.db"
-)
+
 
 
 @pytest.fixture
@@ -87,7 +85,7 @@ def client():
     for path in (
         TEST_EVENT_DATABASE,
         TEST_USER_DATABASE,
-        TEST_AUDIT_DATABASE,
+
     ):
         if path.exists():
             path.unlink()
@@ -122,7 +120,7 @@ def client():
         ), patch(
             "backend.main.AuditDatabase",
             side_effect=lambda: AuditDatabase(
-                TEST_AUDIT_DATABASE
+                TEST_EVENT_DATABASE
             ),
         ):
             with TestClient(app) as test_client:
@@ -132,7 +130,7 @@ def client():
         for path in (
             TEST_EVENT_DATABASE,
             TEST_USER_DATABASE,
-            TEST_AUDIT_DATABASE,
+
         ):
             if path.exists():
                 path.unlink()
@@ -235,7 +233,7 @@ def test_false_positive_is_persisted_and_audited(
     assert event["resolution"] == reason
 
     audit_database = AuditDatabase(
-        TEST_AUDIT_DATABASE
+        TEST_EVENT_DATABASE
     )
 
     try:
@@ -273,3 +271,47 @@ def test_false_positive_endpoint_requires_authentication(
     )
 
     assert response.status_code == 401
+def test_audit_write_failure_rolls_back_false_positive_transition(
+    client,
+    tokens,
+):
+    reason = "Audit failure regression."
+
+    with patch.object(
+        EventDatabase,
+        "_insert_audit_entry",
+        side_effect=RuntimeError("Simulated audit write failure"),
+    ):
+        with pytest.raises(
+            RuntimeError,
+            match="Simulated audit write failure",
+        ):
+            client.post(
+                f"/events/{client.test_event_id}/false-positive",
+                headers=auth_header(tokens["SECURITY_OPERATOR"]),
+                json={"resolution": reason},
+            )
+
+    event_database = EventDatabase(TEST_EVENT_DATABASE)
+    try:
+        event = event_database.get_event(client.test_event_id)
+    finally:
+        event_database.close()
+
+    assert event is not None
+    assert event["status"] == "NEW"
+    assert event["resolution"] is None
+
+    audit_database = AuditDatabase(TEST_EVENT_DATABASE)
+    try:
+        logs = audit_database.get_logs_for_entity(
+            "event",
+            client.test_event_id,
+        )
+    finally:
+        audit_database.close()
+
+    assert not any(
+        log["action"] == "EVENT_FALSE_POSITIVE"
+        for log in logs
+    )

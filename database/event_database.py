@@ -576,11 +576,40 @@ class EventDatabase:
     # EVENT LIFECYCLE
     # ==========================================================
 
+    def _insert_audit_entry(self, audit_entry):
+        """Insert an audit row in the current event transaction."""
+        if audit_entry is None:
+            return
+
+        timestamp = datetime.now(
+            timezone.utc
+        ).isoformat()
+
+        self.connection.execute(
+            """
+            INSERT INTO audit_logs (
+                action, entity_type, entity_id, actor, details, timestamp
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                audit_entry["action"],
+                audit_entry["entity_type"],
+                str(audit_entry["entity_id"])
+                if audit_entry.get("entity_id") is not None
+                else None,
+                audit_entry["actor"],
+                audit_entry.get("details"),
+                timestamp,
+            ),
+        )
+
     def update_status(
         self,
         event_id,
         status,
-        resolution=None
+        resolution=None,
+        audit_entry=None
     ):
 
         supported_statuses = {
@@ -803,6 +832,8 @@ class EventDatabase:
                     expected_status,
                     "FALSE_POSITIVE",
                 )
+
+            self._insert_audit_entry(audit_entry)
 
             self.connection.commit()
 
