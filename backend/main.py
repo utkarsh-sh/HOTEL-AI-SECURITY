@@ -1241,14 +1241,13 @@ def acknowledge_event(
         database.update_status(
             event_id=event_id,
             status="ACKNOWLEDGED",
-        )
-
-        audit_database.create_log(
-            action="EVENT_ACKNOWLEDGED",
-            entity_type="event",
-            entity_id=event_id,
-            actor=current_user["username"],
-            details="Security operator acknowledged alert",
+            audit_entry={
+                "action": "EVENT_ACKNOWLEDGED",
+                "entity_type": "event",
+                "entity_id": event_id,
+                "actor": current_user["username"],
+                "details": "Security operator acknowledged alert",
+            },
         )
 
         updated_event = database.get_event(event_id)
@@ -1299,14 +1298,13 @@ def dispatch_event(
         database.update_status(
             event_id=event_id,
             status="DISPATCHED",
-        )
-
-        audit_database.create_log(
-            action="EVENT_DISPATCHED",
-            entity_type="event",
-            entity_id=event_id,
-            actor=current_user["username"],
-            details="Security team dispatched",
+            audit_entry={
+                "action": "EVENT_DISPATCHED",
+                "entity_type": "event",
+                "entity_id": event_id,
+                "actor": current_user["username"],
+                "details": "Security team dispatched",
+            },
         )
 
         updated_event = database.get_event(event_id)
@@ -1359,17 +1357,16 @@ def resolve_event(
             event_id=event_id,
             status="RESOLVED",
             resolution=request.resolution,
-        )
-
-        audit_database.create_log(
-            action="EVENT_RESOLVED",
-            entity_type="event",
-            entity_id=event_id,
-            actor=current_user["username"],
-            details=(
-                request.resolution
-                or "Security operator resolved event"
-            ),
+            audit_entry={
+                "action": "EVENT_RESOLVED",
+                "entity_type": "event",
+                "entity_id": event_id,
+                "actor": current_user["username"],
+                "details": (
+                    request.resolution
+                    or "Security operator resolved event"
+                ),
+            },
         )
 
         updated_event = database.get_event(event_id)
@@ -1422,17 +1419,16 @@ def mark_false_positive(
             event_id=event_id,
             status="FALSE_POSITIVE",
             resolution=request.resolution,
-        )
-
-        audit_database.create_log(
-            action="EVENT_FALSE_POSITIVE",
-            entity_type="event",
-            entity_id=event_id,
-            actor=current_user["username"],
-            details=(
-                request.resolution
-                or "Security operator marked event as false positive"
-            ),
+            audit_entry={
+                "action": "EVENT_FALSE_POSITIVE",
+                "entity_type": "event",
+                "entity_id": event_id,
+                "actor": current_user["username"],
+                "details": (
+                    request.resolution
+                    or "Security operator marked event as false positive"
+                ),
+            },
         )
 
         updated_event = database.get_event(event_id)

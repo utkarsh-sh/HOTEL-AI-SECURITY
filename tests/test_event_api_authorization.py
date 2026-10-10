@@ -9,6 +9,7 @@ from backend.auth_password import hash_password
 from backend.main import app
 from database.event_database import EventDatabase
 from database.user_database import UserDatabase
+from database.audit_database import AuditDatabase
 
 
 TEST_EVENT_DATABASE = Path("database/test_event_api_authorization.db")
@@ -96,6 +97,9 @@ def client():
         ), patch(
             "backend.auth_dependencies.UserDatabase",
             side_effect=lambda: UserDatabase(TEST_USER_DATABASE),
+        ), patch(
+            "backend.main.AuditDatabase",
+            side_effect=lambda: AuditDatabase(TEST_EVENT_DATABASE),
         ):
             with TestClient(app) as test_client:
                 test_client.test_event_id = event_id
