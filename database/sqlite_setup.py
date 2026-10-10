@@ -1,5 +1,6 @@
 """Explicit SQLite journal-mode configuration helpers."""
 
+import os
 import sqlite3
 import time
 from pathlib import Path
@@ -82,3 +83,65 @@ def configure_journal_mode(
         finally:
             if connection is not None:
                 connection.close()
+
+
+def verify_journal_mode(
+    database_path: DatabasePath,
+    expected_mode: str,
+) -> str:
+    """Verify an existing SQLite journal mode without changing it."""
+    requested_mode = str(expected_mode).strip().upper()
+
+    if requested_mode not in _SUPPORTED_JOURNAL_MODES:
+        supported = ", ".join(sorted(_SUPPORTED_JOURNAL_MODES))
+        raise ValueError(
+            f"Unsupported journal mode {expected_mode!r}; "
+            f"supported modes are: {supported}"
+        )
+
+    path = Path(database_path)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"SQLite database does not exist: {path}"
+        )
+
+    connection = sqlite3.connect(
+        f"file:{path.resolve().as_posix()}?mode=ro",
+        uri=True,
+        timeout=10.0,
+    )
+    try:
+        row = connection.execute("PRAGMA journal_mode").fetchone()
+        if not row or not isinstance(row[0], str):
+            raise RuntimeError(
+                f"Could not read journal mode for {path}"
+            )
+
+        effective_mode = row[0].lower()
+        if effective_mode != requested_mode.lower():
+            raise RuntimeError(
+                f"SQLite journal mode mismatch for {path}: "
+                f"expected {requested_mode.lower()!r}, "
+                f"found {effective_mode!r}"
+            )
+
+        return effective_mode
+    finally:
+        connection.close()
+
+
+def verify_configured_journal_mode(database_path: DatabasePath):
+    """Verify the configured journal mode, if explicitly requested.
+
+    HOTEL_SECURITY_SQLITE_EXPECTED_JOURNAL_MODE may be set to WAL
+    or DELETE. When unset, existing application behavior is unchanged.
+    This function never changes the journal mode.
+    """
+    expected_mode = os.getenv(
+        "HOTEL_SECURITY_SQLITE_EXPECTED_JOURNAL_MODE"
+    )
+
+    if expected_mode is None or not expected_mode.strip():
+        return None
+
+    return verify_journal_mode(database_path, expected_mode)

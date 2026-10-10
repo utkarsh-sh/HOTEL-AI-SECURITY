@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 from typing import Optional
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Form, Depends, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,6 +14,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
+from database.sqlite_setup import verify_configured_journal_mode
 from database.event_database import EventDatabase
 from database.camera_database import CameraDatabase
 from database.audit_database import AuditDatabase
@@ -49,10 +51,17 @@ from rules.event_workflow import (
 )
 
 
+@asynccontextmanager
+async def lifespan(app):
+    verify_configured_journal_mode("database/hotel_security.db")
+    yield
+
+
 app = FastAPI(
     title="Hotel AI Security API",
     description="Backend API for the Hotel AI CCTV Security System",
     version="0.3.0",
+    lifespan=lifespan,
 )
 
 
