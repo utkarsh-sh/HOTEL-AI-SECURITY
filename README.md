@@ -119,7 +119,7 @@ The sample configuration describes CAM-001 with a file-based video source, an ex
 
 The design separates video/AI processing, event persistence and notifications, and operator/API/monitoring access.
 
-` `mermaid
+```mermaid
 flowchart TB
     subgraph INPUT["1. Video input"]
         SRC["Video file or camera stream"]
@@ -172,7 +172,7 @@ flowchart TB
         HEALTH --> METRICS
         API --> METRICS
     end
-` `
+```
 
 ### Component responsibilities
 
@@ -186,7 +186,7 @@ flowchart TB
 
 ## How a frame becomes an event
 
-` `mermaid
+```mermaid
 flowchart TD
     A["Receive frame from configured source"] --> B["Sample at configured AI rate"]
     B --> C["Run relevant detector"]
@@ -202,13 +202,13 @@ flowchart TD
     K --> L["Operator reviews event and context"]
     L --> M["Acknowledge, dispatch, resolve, or mark false positive"]
     M --> N["Persist lifecycle change and audit record"]
-` `
+```
 
 Processing differs by event type: person-based rules consume person detections/tracks; fire/smoke and weapon events use their own ONNX adapters; potential fall events use a bounding-box heuristic. A model or rule output is not, on its own, proof that an incident occurred.
 
 ### Event lifecycle
 
-` `mermaid
+```mermaid
 stateDiagram-v2
     [*] --> Detected: qualifying condition
     Detected --> Acknowledged: operator reviews
@@ -218,7 +218,7 @@ stateDiagram-v2
     Acknowledged --> FalsePositive: review rejects event
     Resolved --> [*]
     FalsePositive --> [*]
-` `
+```
 
 The backend validates event transitions. Supported event actions are authenticated and designed to create audit records; clients must not assume arbitrary state changes are accepted.
 
@@ -249,9 +249,9 @@ These production inference artifacts are intentionally excluded from Git.
 
 After obtaining the approved model artifacts, run the verifier:
 
-` `powershell
+```powershell
 python scripts\verify_model_artifacts.py
-` `
+```
 
 The expected result is MODEL VERIFICATION PASSED. Refer to [docs/model_acquisition.md](docs/model_acquisition.md) for pinned hashes, input/output interfaces, provenance notes, and acquisition steps. The recorded source metadata for the fire/smoke artifact is incomplete; do not guess a download URL. Use the approved project artifact and verify its hash.
 
@@ -304,27 +304,27 @@ The API, web UI, and CCTV runner are separate processes. Start with sample video
 
 ### 1. Clone the repository
 
-` `powershell
+```powershell
 git clone https://github.com/utkarsh-sh/HOTEL-AI-SECURITY.git
 cd HOTEL-AI-SECURITY
-` `
+```
 
 ### 2. Create a Python environment and install dependencies
 
-` `powershell
+```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements-ci.txt
-` `
+```
 
 The CI dependency file is the reproducible test set and may not include every optional development tool.
 
 ### 3. Set a local JWT secret
 
-` `powershell
+```powershell
 $env:HOTEL_SECURITY_JWT_SECRET = "replace-with-a-unique-local-secret-at-least-32-characters"
-` `
+```
 
 The example is for local testing only. Use a unique protected secret for a deployment.
 
@@ -332,17 +332,17 @@ The example is for local testing only. Use a unique protected secret for a deplo
 
 Follow [docs/model_acquisition.md](docs/model_acquisition.md), place the required ONNX files at the exact paths above, and run:
 
-` `powershell
+```powershell
 python scripts\verify_model_artifacts.py
-` `
+```
 
 Do not proceed with fire/smoke or weapon evaluation if verification fails. Person detection uses TorchVision pretrained weights; the other two models are separately supplied runtime assets.
 
 ### 5. Create an administrator
 
-` `powershell
+```powershell
 python scripts\create_admin.py
-` `
+```
 
 Follow the interactive prompts. Do not share administrator credentials.
 
@@ -350,9 +350,9 @@ Follow the interactive prompts. Do not share administrator credentials.
 
 In terminal 1, from the repository root with the virtual environment activated:
 
-` `powershell
+```powershell
 python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
-` `
+```
 
 Useful endpoints:
 
@@ -367,11 +367,11 @@ Useful endpoints:
 
 In terminal 2:
 
-` `powershell
+```powershell
 Set-Location .\frontend
 npm ci
 npm run dev
-` `
+```
 
 Open the local URL printed by Vite, typically http://127.0.0.1:5173 or http://localhost:5173. The frontend API client is configured to call http://127.0.0.1:8000.
 
@@ -379,9 +379,9 @@ Open the local URL printed by Vite, typically http://127.0.0.1:5173 or http://lo
 
 After configuration, source reachability, and model artifacts have been verified, open terminal 3 at the repository root, activate the environment, and run:
 
-` `powershell
+```powershell
 python -m ai.run_intrusion_detection
-` `
+```
 
 The API and runner are separate processes. Check the runner output and camera-health records; a running API does not prove inference is active.
 
@@ -400,24 +400,24 @@ After camera/zone administration changes, restart the runner before assuming the
 
 ### Python test suite
 
-` `powershell
+```powershell
 python -m pytest -q
-` `
+```
 
 ### Verify model artifacts
 
-` `powershell
+```powershell
 python scripts\verify_model_artifacts.py
-` `
+```
 
 ### Lint and build the frontend
 
-` `powershell
+```powershell
 Set-Location .\frontend
 npm ci
 npm run lint
 npm run build
-` `
+```
 
 The GitHub Actions workflow in [.github/workflows/tests.yml](.github/workflows/tests.yml) runs the Python test suite on Python 3.13 and runs frontend lint/build on Node.js 22. It runs on pushes to master and feature branches, plus pull requests targeting master.
 
@@ -524,7 +524,7 @@ Use this as an assistive layer alongside established physical-security procedure
 
 ## Repository structure
 
-` `text
+```text
 HOTEL-AI-SECURITY/
 ├── ai/                    # Detector adapters, tracking, event processors, evidence
 ├── backend/               # FastAPI application, authentication, schemas and routes
@@ -541,7 +541,7 @@ HOTEL-AI-SECURITY/
 ├── video/                 # Source abstraction, frame sampling, worker orchestration
 ├── requirements-ci.txt    # CI-tested Python dependency set
 └── README.md              # Project overview and entry point
-` `
+```
 
 ## Development workflow
 
@@ -554,11 +554,11 @@ HOTEL-AI-SECURITY/
 
 Recommended checks before committing:
 
-` `powershell
+```powershell
 git status --short
 git diff --check
 python -m pytest -q
-` `
+```
 
 For frontend changes, also run npm run lint and npm run build from the frontend directory.
 
