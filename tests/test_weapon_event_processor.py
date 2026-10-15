@@ -63,3 +63,18 @@ def test_bad_box_rejected():
     processor = WeaponEventProcessor()
     with pytest.raises(ValueError):
         processor.evaluate([det(box=[10, 10, 5, 5])])
+
+
+def test_duplicate_detections_in_same_frame_count_once():
+    processor = WeaponEventProcessor(persistence_frames=3)
+
+    # Three duplicate boxes in one frame count as only one observation.
+    assert processor.evaluate([det(), det(), det()]) == []
+
+    # Persistence must be reached across three separate evaluations.
+    assert processor.evaluate([det()]) == []
+    events = processor.evaluate([det()])
+
+    assert len(events) == 1
+    assert events[0]["event_type"] == "WEAPON"
+    assert events[0]["weapon_class"] == "gun"

@@ -136,9 +136,11 @@ class WeaponEventProcessor:
             state = self._states[state_id]
             if state["track_id"] is None and track_id is not None:
                 state["track_id"] = track_id
+            already_observed_this_frame = state_id in current
             state["center"] = center
-            state["count"] += 1
             state["max_confidence"] = max(state["max_confidence"], confidence)
+            if not already_observed_this_frame:
+                state["count"] += 1
             current.add(state_id)
             if state["count"] >= self.persistence_frames and not state["alerted"]:
                 state["alerted"] = True
