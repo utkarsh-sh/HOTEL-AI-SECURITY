@@ -31,9 +31,11 @@ class RTSPVideoSource:
 
         self.capture = None
         self.reconnect_attempts = 0
+        self._started = False
 
     def open(self) -> None:
         """Open the RTSP stream."""
+        self._started = False
         self._release_capture()
 
         self.capture = cv2.VideoCapture(
@@ -48,18 +50,27 @@ class RTSPVideoSource:
             )
 
         self.reconnect_attempts = 0
+        self._started = True
 
     def read(self):
-        """Read one frame from the stream.
-
-        Returns:
-            numpy.ndarray when a frame is received.
-            None when the frame cannot be read after reconnect attempts.
-        """
+        """Read a frame, retrying connection after exhausted reconnects."""
         if self.capture is None:
-            raise RuntimeError(
-                "RTSP video source is not open."
-            )
+            if not self._started:
+                raise RuntimeError(
+                    "RTSP video source is not open."
+                )
+
+            # A previously opened source may have exhausted its reconnects.
+            # Retry on subsequent read() calls rather than staying offline.
+            if not self._reconnect():
+                return None
+
+            success, frame = self.capture.read()
+            if success:
+                self.reconnect_attempts = 0
+                return frame
+
+            return None
 
         success, frame = self.capture.read()
 
@@ -77,9 +88,10 @@ class RTSPVideoSource:
         return None
 
     def release(self) -> None:
-        """Release the RTSP stream."""
+        """Release the stream and disable subsequent reads until reopened."""
         self._release_capture()
         self.reconnect_attempts = 0
+        self._started = False
 
     def _reconnect(self) -> bool:
         """Attempt to reconnect to the RTSP stream."""

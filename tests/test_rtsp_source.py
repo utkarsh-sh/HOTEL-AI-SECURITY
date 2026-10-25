@@ -241,3 +241,53 @@ def test_credentials_are_redacted():
     assert safe_url == (
         "rtsp://[REDACTED]@192.168.1.50:554/stream"
     )
+
+
+def test_read_can_recover_on_later_call_after_reconnect_exhaustion(monkeypatch):
+    stream_available = {"value": False}
+    calls = {"count": 0}
+    recovered_frame = np.ones((100, 200, 3), dtype=np.uint8)
+
+    initial_capture = FakeCapture(
+        opened=True,
+        read_results=[(False, None)],
+    )
+
+    def fake_video_capture(url, backend):
+        calls["count"] += 1
+
+        if calls["count"] == 1:
+            return initial_capture
+
+        if not stream_available["value"]:
+            return FakeCapture(opened=False)
+
+        return FakeCapture(
+            opened=True,
+            read_results=[(True, recovered_frame)],
+        )
+
+    monkeypatch.setattr(
+        "video.rtsp_source.cv2.VideoCapture",
+        fake_video_capture,
+    )
+
+    source = RTSPVideoSource(
+        "rtsp://simulated-test-stream",
+        max_reconnect_attempts=2,
+        reconnect_delay_seconds=0,
+    )
+
+    source.open()
+
+    # The stream fails, and both immediate reconnect attempts fail.
+    assert source.read() is None
+    assert source.capture is None
+
+    # Simulate the stream becoming available again.
+    stream_available["value"] = True
+
+    # Expected behavior: a subsequent read should reconnect successfully.
+    recovered = source.read()
+    assert recovered is recovered_frame
+    assert source.reconnect_attempts == 0
